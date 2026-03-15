@@ -33,7 +33,7 @@ export default function Login() {
         <div style={styles.brandInner}>
           <div style={styles.tooth}>&#10022;</div>
           <h1 style={styles.brandTitle}>ODOMSA</h1>
-          <p style={styles.brandSub}>Clinica Dental<br />Tomala, Lempira</p>
+          <p style={styles.brandSub}>Clinica Dental</p>
         </div>
       </div>
       <div style={styles.formPanel}>
