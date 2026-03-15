@@ -12,15 +12,14 @@ export function AuthProvider({ children }) {
   })
 
   const login = (userData) => {
-    // Store user but no clinic yet
-    const s = { ...userData, clinicUrl: null, clinicName: null }
+    const s = { ...userData, clinicUrl: null, clinicName: null, patientsUrl: null }
     sessionStorage.setItem(SESSION_KEY, JSON.stringify(s))
     setSession(s)
   }
 
   const selectClinic = (clinic) => {
-    // clinic: { name, url }
-    const s = { ...session, clinicUrl: clinic.url, clinicName: clinic.name }
+    // clinic: { name, url, patientsUrl }
+    const s = { ...session, clinicUrl: clinic.url, clinicName: clinic.name, patientsUrl: clinic.patientsUrl }
     sessionStorage.setItem(SESSION_KEY, JSON.stringify(s))
     setSession(s)
   }
@@ -30,7 +29,7 @@ export function AuthProvider({ children }) {
     setSession(null)
   }
 
-  const isAdmin       = session?.role === 'admin'
+  const isAdmin        = session?.role === 'admin'
   const clinicSelected = !!session?.clinicUrl
 
   return (
