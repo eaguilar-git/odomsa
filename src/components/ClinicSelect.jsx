@@ -5,11 +5,13 @@ const CLINICS = [
     name: 'Tomala',
     subtitle: 'Lempira, Honduras',
     url: 'https://script.google.com/macros/s/AKfycbw6npDTpziujj1fo2q5GEwlJYZrznqIdfMb7ZFiSJ-2ZOXYSdQ2cyf7hufhE8lO4lAj/exec',
+    patientsUrl: 'https://script.google.com/macros/s/AKfycbxZQ0BkXhTRBZ-EnDEplyzbIlk9yDRltirAZwyRybOsUBTwNAmBwhB9EdOG87jDgcdTcg/exec',
   },
   {
     name: 'San Sebastián',
     subtitle: 'Honduras',
     url: 'https://script.google.com/macros/s/AKfycbyKDANcv70fT_3NZHaKNhYPWL6NY8MXAVRjo6q2xzul84MqPbT32Tx7OSORxBl6-y_XtA/exec',
+    patientsUrl: 'https://script.google.com/macros/s/AKfycbz-D5kNjgNCQHLNrxIw61A5PcUb82G-7SnYrPNF2tMUOVL7X2sMnH0jiVGisYBoOoE/exec',
   },
 ]
 
