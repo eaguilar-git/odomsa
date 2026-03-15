@@ -236,7 +236,7 @@ export default function Dashboard() {
         <div style={sideTop}>
           <div style={logo}>✦</div>
           <div style={logoText}>ODOMSA</div>
-          <div style={logoBrand}>Clínica Dental</div>
+          <div style={logoBrand}>{session?.clinicName || 'Clínica Dental'}</div>
         </div>
         <div style={navItems}>
           <NavItem icon="📅" label="Día actual" />
