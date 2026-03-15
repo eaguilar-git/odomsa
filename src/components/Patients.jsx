@@ -102,8 +102,8 @@ export default function Patients() {
     setListLoading(true); setStatus('')
     try {
       const res = await listPatientsPaged(p, 20)
-      const rows = Array.isArray(res) ? res : (res.patients || res.rows || [])
-      const total = res.totalPages || Math.ceil((res.totalCount || rows.length) / 20) || 1
+      const rows = Array.isArray(res) ? res : (res.items || res.patients || res.rows || [])
+      const total = res.totalPages || (res.total ? Math.ceil(res.total / 20) : 1) || 1
       setListData(rows); setTotalPages(total)
     } catch (err) { setStatus('Error: ' + err.message) }
     finally { setListLoading(false) }
