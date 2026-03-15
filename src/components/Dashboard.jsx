@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useAuth } from '../AuthContext'
 import { getDayData, addIncome, updateIncome, deleteIncome, addExpense, updateExpense, deleteExpense, saveCatalog, consolidateDay } from '../api'
 import { Section, StatCard, Btn, Badge, StatusBar, HNL } from './ui'
+import Patients from './Patients'
 
 const todayISO = () => new Date().toISOString().slice(0, 10)
 const makeId   = () => Math.random().toString(36).slice(2, 9)
@@ -27,6 +28,7 @@ const EXPENSE_REF     = ['Agua botellón', 'Envíos de prótesis', 'Limpieza', '
 
 export default function Dashboard() {
   const { session, logout, isAdmin } = useAuth()
+  const [activeTab, setActiveTab] = useState('ingresos') // 'ingresos' | 'pacientes'
 
   // ── State ─────────────────────────────────────────────────────────────────
   const [date, setDate]             = useState(todayISO())
@@ -239,7 +241,8 @@ export default function Dashboard() {
           <div style={logoBrand}>{session?.clinicName || 'Clínica Dental'}</div>
         </div>
         <div style={navItems}>
-          <NavItem icon="📅" label="Día actual" />
+          <NavItem icon="📅" label="Ingresos / Egresos" active={activeTab === 'ingresos'} onClick={() => setActiveTab('ingresos')} />
+          <NavItem icon="🦷" label="Pacientes"           active={activeTab === 'pacientes'} onClick={() => setActiveTab('pacientes')} />
         </div>
         <div style={sideBottom}>
           <div style={userInfo}>
@@ -257,6 +260,7 @@ export default function Dashboard() {
 
       {/* Main */}
       <main style={main}>
+        {activeTab === 'pacientes' ? <Patients /> : (<>
         {/* Header */}
         <div style={pageHeader} className="fade-up">
           <div>
@@ -486,6 +490,7 @@ export default function Dashboard() {
         <footer style={footer}>
           Tomalá, Lempira, Honduras · ODOMSA · {new Date().getFullYear()}
         </footer>
+        </>)}
       </main>
     </div>
   )
@@ -496,7 +501,11 @@ const inputStyle = { width: '100%', padding: '0.6rem 0.85rem', border: '1.5px so
 const Input  = ({ style: extra, ...p }) => <input  style={{ ...inputStyle, ...extra }} {...p} />
 const Select = ({ children, style: extra, ...p }) => <select style={{ ...inputStyle, ...extra }} {...p}>{children}</select>
 const FieldLabel = ({ children }) => <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--ink-soft)', marginBottom: '0.35rem' }}>{children}</label>
-const NavItem = ({ icon, label }) => <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '0.6rem 1rem', borderRadius: 'var(--radius-sm)', background: 'rgba(255,255,255,0.15)', color: '#fff', fontSize: '0.875rem', fontWeight: 500, cursor: 'pointer' }}><span>{icon}</span>{label}</div>
+const NavItem = ({ icon, label, active, onClick }) => (
+  <div onClick={onClick} style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '0.6rem 1rem', borderRadius: 'var(--radius-sm)', background: active ? 'rgba(255,255,255,0.25)' : 'rgba(255,255,255,0.1)', color: '#fff', fontSize: '0.875rem', fontWeight: active ? 600 : 500, cursor: 'pointer', transition: 'background 0.15s' }}>
+    <span>{icon}</span>{label}
+  </div>
+)
 
 // ── Styles ────────────────────────────────────────────────────────────────────
 const layout     = { display: 'flex', minHeight: '100vh' }
