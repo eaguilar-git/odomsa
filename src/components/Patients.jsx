@@ -1,7 +1,70 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { useAuth } from '../AuthContext'
 import { findPatients, listPatientsPaged, getPatientDashboard, createPatient, createVisit } from '../api'
 import { Section, Btn, Badge } from './ui'
+
+// ── Signature pad ─────────────────────────────────────────────────────────────
+function SignaturePad({ onChange }) {
+  const canvasRef = useRef(null)
+  const drawing   = useRef(false)
+  const dirty     = useRef(false)
+
+  const onChangeCb = useCallback(onChange, [])
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    const ctx    = canvas.getContext('2d')
+    ctx.fillStyle = '#fff'
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+    ctx.strokeStyle = '#1a1a1a'
+    ctx.lineWidth = 2
+    ctx.lineCap   = 'round'
+
+    const pos = e => {
+      const r = canvas.getBoundingClientRect()
+      const src = e.touches ? e.touches[0] : e
+      return { x: src.clientX - r.left, y: src.clientY - r.top }
+    }
+    const start = e => { e.preventDefault(); drawing.current = true; const p = pos(e); ctx.beginPath(); ctx.moveTo(p.x, p.y) }
+    const move  = e => { e.preventDefault(); if (!drawing.current) return; const p = pos(e); ctx.lineTo(p.x, p.y); ctx.stroke(); dirty.current = true }
+    const end   = e => { e.preventDefault(); drawing.current = false; if (dirty.current) onChangeCb(canvas.toDataURL('image/png')) }
+
+    canvas.addEventListener('mousedown',  start)
+    canvas.addEventListener('mousemove',  move)
+    canvas.addEventListener('mouseup',    end)
+    canvas.addEventListener('touchstart', start, { passive: false })
+    canvas.addEventListener('touchmove',  move,  { passive: false })
+    canvas.addEventListener('touchend',   end,   { passive: false })
+    return () => {
+      canvas.removeEventListener('mousedown',  start)
+      canvas.removeEventListener('mousemove',  move)
+      canvas.removeEventListener('mouseup',    end)
+      canvas.removeEventListener('touchstart', start)
+      canvas.removeEventListener('touchmove',  move)
+      canvas.removeEventListener('touchend',   end)
+    }
+  }, [])
+
+  const clear = () => {
+    const canvas = canvasRef.current
+    const ctx    = canvas.getContext('2d')
+    ctx.fillStyle = '#fff'
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+    dirty.current = false
+    onChangeCb('')
+  }
+
+  return (
+    <div>
+      <canvas ref={canvasRef} width={500} height={150}
+        style={{ border: '1.5px solid var(--border)', borderRadius: 'var(--radius-sm)', display: 'block', cursor: 'crosshair', touchAction: 'none', background: '#fff', maxWidth: '100%' }} />
+      <button type="button" onClick={clear}
+        style={{ marginTop: '0.4rem', fontSize: '0.75rem', color: 'var(--ink-muted)', background: 'transparent', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '0.25rem 0.6rem', cursor: 'pointer' }}>
+        Limpiar firma
+      </button>
+    </div>
+  )
+}
 
 const today = () => new Date().toISOString().slice(0, 10)
 
@@ -67,6 +130,8 @@ const EMPTY_PATIENT = {
   sangrado_encias: '', sale_pus: '', supuracion_detalle: '',
   movilidad_dientes: '', movilidad_detalle: '',
   observaciones: '',
+  firma_dibujo: '', // base64 PNG from canvas
+  firma: '',        // legible name
 }
 
 const YES_NO_REQUIRED = ['enf_alguna','consume_medicamentos','alergico_medicamentos','sangrado_extraccion','diabetico','cardiaco','hipertension','operado','respiratorio','fuma','alcohol','embarazo','golpe_dientes','dificulta_hablar','dificulta_masticar','dificulta_abrir','sangrado_encias','sale_pus','movilidad_dientes']
@@ -139,6 +204,8 @@ export default function Patients() {
     if (missing.length) return setStatus('Faltan campos obligatorios: ' + missing.map(k => k.replace(/_/g,' ')).join(', '))
     const missingYN = YES_NO_REQUIRED.filter(k => !form[k])
     if (missingYN.length) return setStatus('Marcar Sí/No en: ' + missingYN.map(k => k.replace(/_/g,' ')).join(', '))
+    if (!form.firma_dibujo) return setStatus('Debe capturar la firma del paciente/tutor en el recuadro.')
+    if (!form.firma.trim()) return setStatus('Ingrese el nombre legible del firmante.')
     setSaving(true); setStatus('Guardando paciente…')
     try {
       const payload = { ...form }
@@ -285,9 +352,19 @@ export default function Patients() {
           <textarea rows={3} value={form.observaciones} onChange={e => setField('observaciones',e.target.value)} style={{width:'100%',padding:'0.55rem 0.8rem',border:'1.5px solid var(--border)',borderRadius:'var(--radius-sm)',background:'#fff',color:'var(--ink)',fontSize:'0.875rem',outline:'none',resize:'vertical'}} />
         </div>
       </Section>
+      <Section title="Firma del paciente / tutor">
+        <p style={{ fontSize: '0.85rem', color: 'var(--ink-muted)', marginBottom: '0.75rem' }}>
+          Firme en el recuadro con el dedo o el mouse. Este consentimiento tiene carácter de declaración jurada.
+        </p>
+        <SignaturePad onChange={v => setField('firma_dibujo', v)} />
+        <div style={{ marginTop: '1rem' }}>
+          <FieldLabel required>Nombre legible del firmante</FieldLabel>
+          <Input value={form.firma} onChange={e => setField('firma', e.target.value)} placeholder="Nombre completo del paciente o tutor" style={{ maxWidth: '400px' }} />
+        </div>
+      </Section>
       <div style={{display:'flex',gap:'1rem',marginBottom:'2rem'}}>
         <Btn variant="primary" onClick={submitPatient}>{saving ? 'Guardando…' : 'Guardar paciente'}</Btn>
-        <Btn variant="ghost" onClick={() => { setForm(EMPTY_PATIENT); setStatus('') }}>Limpiar</Btn>
+        <Btn variant="ghost" onClick={() => { setForm(EMPTY_PATIENT); setStatus('') }}>Limpiar formulario</Btn>
       </div>
     </div>
   )
