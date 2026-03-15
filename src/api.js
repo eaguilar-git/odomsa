@@ -84,3 +84,53 @@ export async function saveCatalog(dateStr, items) {
 export async function consolidateDay(dateStr) {
   return gasCall('consolidateDay', { dateStr })
 }
+
+// ── Patients (per-clinic patient GAS backend) ─────────────────────────────────
+
+function getPatientsUrl() {
+  try {
+    const s = JSON.parse(sessionStorage.getItem('odomsa_session') || '{}')
+    return s.patientsUrl || null
+  } catch { return null }
+}
+
+async function patientsCall(action, payload = {}) {
+  try {
+    const s = JSON.parse(sessionStorage.getItem('odomsa_session') || '{}')
+    const token = s.token || ''
+    const url = getPatientsUrl()
+    if (!url) throw new Error('No se ha seleccionado una clínica con módulo de pacientes.')
+    const body = JSON.stringify({ action, token, ...payload })
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body,
+    })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const data = await res.json()
+    if (data.error) throw new Error(data.error)
+    return data
+  } catch (err) {
+    throw new Error(err.message || 'Error conectando con módulo de pacientes.')
+  }
+}
+
+export async function findPatients(query) {
+  return patientsCall('findPatients', { query })
+}
+
+export async function listPatientsPaged(page = 1, pageSize = 20) {
+  return patientsCall('listPatientsPaged', { page, pageSize })
+}
+
+export async function getPatientDashboard(identidad) {
+  return patientsCall('getPatientDashboard', { identidad })
+}
+
+export async function createPatient(payload) {
+  return patientsCall('createPatient', { payload })
+}
+
+export async function createVisit(payload) {
+  return patientsCall('createVisit', { payload })
+}
