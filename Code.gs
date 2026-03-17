@@ -27,6 +27,17 @@ function makeResponse_(data) {
   return output;
 }
 
+/************ DATE HELPER ************/
+function formatDateStr_(val) {
+  if (val instanceof Date) {
+    const y = val.getFullYear();
+    const m = String(val.getMonth() + 1).padStart(2, '0');
+    const d = String(val.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+  return String(val || '');
+}
+
 /************ WEB ENTRY POINTS ************/
 function doGet() {
   return HtmlService
@@ -39,12 +50,10 @@ function doPost(e) {
     const body = JSON.parse(e.postData.contents);
     const { action, token } = body;
 
-    // Auth endpoint — no token required
     if (action === 'validateUser') {
       return makeResponse_(validateUserHandler_(body.email, body.password));
     }
 
-    // All other endpoints require a valid token
     const authResult = verifyToken_(token);
     if (!authResult.ok) return makeResponse_({ error: 'No autorizado', ok: false });
 
@@ -161,7 +170,7 @@ function getCurrentUser() {
   return { email: (Session.getActiveUser() && Session.getActiveUser().getEmail()) || "" };
 }
 
-/************ HELPERS: headers, ids, search ************/
+/************ HELPERS ************/
 function getHeaderMap_(sheet) {
   const lastCol = sheet.getLastColumn();
   if (lastCol < 1) return {};
@@ -799,7 +808,7 @@ function getDayData(dateStr) {
       if (hasOld) {
         incomes.push({
           id: String(r[8] || ""),
-          date: String(r[1] || ""),
+          date: formatDateStr_(r[1]),
           patientName: String(r[3] || ""),
           servicesText: String(r[4] || ""),
           services: [],
@@ -810,7 +819,7 @@ function getDayData(dateStr) {
       } else {
         incomes.push({
           id: String(r[7] || ""),
-          date: String(r[1] || ""),
+          date: formatDateStr_(r[1]),
           patientName: String(r[2] || ""),
           servicesText: String(r[3] || ""),
           services: [],
@@ -829,7 +838,7 @@ function getDayData(dateStr) {
     if (!r[1]) continue;
     expenses.push({
       id: String(r[5] || ""),
-      date: String(r[1] || ""),
+      date: formatDateStr_(r[1]),
       concept: String(r[2] || ""),
       amount: Number(r[3] || 0),
       notes: String(r[4] || "")
@@ -955,21 +964,21 @@ function consolidateDay(dateStr) {
       const id = String(r[8] || "");
       if (id) dayIngresoIds.add(id);
       batchIng.push([
-        String(r[1] || ""), monthNum, yearNum,
+        formatDateStr_(r[1]), monthNum, yearNum,
         String(r[2] || ""),
         String(r[3] || ""),
         String(r[4] || ""), String(r[5] || ""), String(r[6] || ""),
-        Number(r[7] || 0),  id,  dailySS.getName()
+        Number(r[7] || 0), id, dailySS.getName()
       ]);
     } else {
       const id = String(r[7] || "");
       if (id) dayIngresoIds.add(id);
       batchIng.push([
-        String(r[1] || ""), monthNum, yearNum,
+        formatDateStr_(r[1]), monthNum, yearNum,
         "",
         String(r[2] || ""),
         String(r[3] || ""), String(r[4] || ""), String(r[5] || ""),
-        Number(r[6] || 0),  id,  dailySS.getName()
+        Number(r[6] || 0), id, dailySS.getName()
       ]);
     }
   }
@@ -981,7 +990,7 @@ function consolidateDay(dateStr) {
     const id = String(r[5] || "");
     if (id) dayEgresoIds.add(id);
     batchEgr.push([
-      String(r[1] || ""), monthNum, yearNum,
+      formatDateStr_(r[1]), monthNum, yearNum,
       String(r[2] || ""), Number(r[3] || 0),
       String(r[4] || ""), id, dailySS.getName()
     ]);
