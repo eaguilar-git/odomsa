@@ -1,23 +1,15 @@
 /************ CONFIG ************/
-const PARENT_FOLDER_ID = "16Kv77c0uO66jk6fAO85nHWZKBCWAm5Wx"; // Opcional: carpeta en Drive (deja "" si no deseas carpeta)
+const PARENT_FOLDER_ID = "16Kv77c0uO66jk6fAO85nHWZKBCWAm5Wx";
 const ALLOWED_EMAILS = [
   "aguilared.96@gmail.com",
   "sarahi.eu99@gmail.com",
-  "ocastillo.update@gmail.com",
   "draeuniceaguilar.odomsa@gmail.com"
 ];
 
-// Nombre del archivo global de catálogo
 const GLOBAL_CATALOG_FILENAME = "ODOMSA-Catalogo-Global";
 
 /************ CONFIG — USERS SHEET ************/
-// Nombre del archivo Google Sheet que tiene la hoja "Users"
-// Columnas: email | password_hash | role | name | active
-// role: "admin" | "staff"
-// active: TRUE | FALSE
 const USERS_SPREADSHEET_NAME = "ODOMSA-Users";
-
-// Simple token secret — change this to any random string you want
 const TOKEN_SECRET = "odomsa_2026_secret_changeme";
 
 /************ CORS HEADERS ************/
@@ -36,15 +28,12 @@ function makeResponse_(data) {
 }
 
 /************ WEB ENTRY POINTS ************/
-
-// doGet: kept for backward compat with original GAS Web App
 function doGet() {
   return HtmlService
     .createHtmlOutput('<p>ODOMSA API — use the GitHub Pages frontend.</p>')
     .setTitle('ODOMSA API');
 }
 
-// doPost: unified router for GitHub Pages frontend
 function doPost(e) {
   try {
     const body = JSON.parse(e.postData.contents);
@@ -64,11 +53,11 @@ function doPost(e) {
     switch (action) {
       case 'getDayData':      return makeResponse_(getDayData(body.dateStr));
       case 'addIncome':       return makeResponse_(addIncome(body.ing));
-      case 'updateIncome':    return makeResponse_(updateIncome(body.ing));
-      case 'deleteIncome':    requireAdmin_(role); return makeResponse_(deleteIncome(body.payload));
+      case 'updateIncome':    requireAdmin_(role); return makeResponse_(updateIncome(body.ing));
+      case 'deleteIncome':    requireAdmin_(role); return makeResponse_(deleteIncome(body.payload ?? body));
       case 'addExpense':      return makeResponse_(addExpense(body.exp));
-      case 'updateExpense':   return makeResponse_(updateExpense(body.exp));
-      case 'deleteExpense':   requireAdmin_(role); return makeResponse_(deleteExpense(body.payload));
+      case 'updateExpense':   requireAdmin_(role); return makeResponse_(updateExpense(body.exp));
+      case 'deleteExpense':   requireAdmin_(role); return makeResponse_(deleteExpense(body.payload ?? body));
       case 'saveCatalog':     requireAdmin_(role); return makeResponse_(saveCatalog(body.dateStr, body.items));
       case 'consolidateDay':  requireAdmin_(role); return makeResponse_(consolidateDay(body.dateStr));
       default: return makeResponse_({ error: 'Acción desconocida', ok: false });
@@ -83,7 +72,6 @@ function requireAdmin_(role) {
 }
 
 /************ AUTH: USERS SHEET ************/
-
 function getUsersSheet_() {
   let file = null;
   if (PARENT_FOLDER_ID && PARENT_FOLDER_ID.trim()) {
@@ -123,7 +111,6 @@ function getUsersSheet_() {
   return { ss, sh };
 }
 
-// Simple hash using Utilities.computeDigest (SHA-256)
 function hashPassword_(password) {
   const bytes = Utilities.computeDigest(
     Utilities.DigestAlgorithm.SHA_256,
@@ -132,12 +119,10 @@ function hashPassword_(password) {
   return bytes.map(b => ('0' + (b & 0xFF).toString(16)).slice(-2)).join('');
 }
 
-// Generate a simple session token (email + timestamp, hashed)
 function generateToken_(email, role) {
   const payload = email + '|' + role + '|' + Date.now() + '|' + TOKEN_SECRET;
   const bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, payload);
   const sig = bytes.map(b => ('0' + (b & 0xFF).toString(16)).slice(-2)).join('').slice(0, 32);
-  // token = base64(email|role) + "." + sig
   return Utilities.base64Encode(email + '|' + role) + '.' + sig;
 }
 
@@ -186,7 +171,6 @@ function getHeaderMap_(sheet) {
   return map;
 }
 
-// Hallar fila por ID en la columna cuyo encabezado sea idHeaderName (1-based)
 function findRowByHeaderId_(sheet, id, idHeaderName) {
   if (!id) return -1;
   const header = getHeaderMap_(sheet);
@@ -202,12 +186,10 @@ function findRowByHeaderId_(sheet, id, idHeaderName) {
   return -1;
 }
 
-// ID corto aleatorio
 function genShortId_() {
   return Math.random().toString(36).slice(2, 9);
 }
 
-// Backfill de IDs en blanco bajo el encabezado indicado (p.ej., 'ingreso_id' o 'egreso_id')
 function backfillIdsIfMissing_(sheet, idHeaderName) {
   const header = getHeaderMap_(sheet);
   const idCol = header[idHeaderName.toLowerCase()];
@@ -262,7 +244,6 @@ function getOrCreateDailySpreadsheet_(dateStr) {
 }
 
 function ensureDailySheets_(ss) {
-  // Ingresos (nuevo layout: sin paciente_id)
   let ingresos = ss.getSheetByName('Ingresos');
   if (!ingresos) {
     ingresos = ss.insertSheet('Ingresos');
@@ -274,7 +255,6 @@ function ensureDailySheets_(ss) {
     ingresos.setFrozenRows(1);
   }
 
-  // Egresos
   let egresos = ss.getSheetByName('Egresos');
   if (!egresos) {
     egresos = ss.insertSheet('Egresos');
@@ -298,7 +278,6 @@ function ensureDailySheets_(ss) {
     }
   }
 
-  // Balance (del archivo diario)
   let balance = ss.getSheetByName('Balance');
   if (!balance) {
     balance = ss.insertSheet('Balance');
@@ -314,7 +293,6 @@ function ensureDailySheets_(ss) {
   balance.getRange(3,2).setFormula('=IFNA(SUM(Egresos!D2:D),0)');
   balance.getRange(4,2).setFormula('=B2-B3');
 
-  // Catálogo local (solo para visualización/compatibilidad)
   let catalogo = ss.getSheetByName('Catalogo');
   if (!catalogo) {
     catalogo = ss.insertSheet('Catalogo');
@@ -325,7 +303,6 @@ function ensureDailySheets_(ss) {
   return { ingresos, egresos, balance, catalogo };
 }
 
-/** Consolidado: archivo único por MES **/
 function getOrCreateConsolidatedForMonth_(dateStr) {
   const [y, m] = String(dateStr).split('-');
   const monthTag = `${y}-${m}`;
@@ -357,11 +334,10 @@ function getOrCreateConsolidatedForMonth_(dateStr) {
   }
 }
 
-/** Castea Mes/Año a números (B/C) y repara desde fecha si hace falta **/
 function coerceMonthYearToNumbers_(sheet) {
   const last = sheet.getLastRow();
   if (last < 2) return;
-  const rng = sheet.getRange(2, 1, last - 1, 3).getValues(); // A..C
+  const rng = sheet.getRange(2, 1, last - 1, 3).getValues();
   let changed = false;
   for (let i = 0; i < rng.length; i++) {
     const fecha = rng[i][0];
@@ -398,17 +374,11 @@ function coerceMonthYearToNumbers_(sheet) {
   if (changed) sheet.getRange(2, 1, rng.length, 3).setValues(rng);
 }
 
-/**
- * Asegura hojas de consolidado, renombra CI/CE si existen y construye Resumen
- * con 8 ingresos adicionales y 8 egresos adicionales.
- * (Actualizado para fórmulas robustas y etiquetas estables en Resumen)
- */
 function ensureConsolidatedSheets_(ss, dateStr) {
   const [y, m] = String(dateStr).split('-');
   const yearNum = Number(y);
   const monthNum = Number(m);
 
-  // Renombrar legacy
   let ci = ss.getSheetByName('Consolidado_Ingresos');
   let ce = ss.getSheetByName('Consolidado_Egresos');
   const oldCI = ss.getSheetByName('CI');
@@ -416,7 +386,6 @@ function ensureConsolidatedSheets_(ss, dateStr) {
   if (!ci && oldCI) { oldCI.setName('Consolidado_Ingresos'); ci = oldCI; }
   if (!ce && oldCE) { oldCE.setName('Consolidado_Egresos'); ce = oldCE; }
 
-  // Crear si faltan
   if (!ci) {
     ci = ss.insertSheet('Consolidado_Ingresos');
     ci.appendRow([
@@ -437,11 +406,9 @@ function ensureConsolidatedSheets_(ss, dateStr) {
     ce.setFrozenRows(1);
   }
 
-  // Normaliza mes/año a números
   coerceMonthYearToNumbers_(ci);
   coerceMonthYearToNumbers_(ce);
 
-  // Resumen
   let resumen = ss.getSheetByName('Resumen');
   if (!resumen) resumen = ss.insertSheet('Resumen');
 
@@ -456,19 +423,15 @@ function ensureConsolidatedSheets_(ss, dateStr) {
   const INIT_MARKER_CELL = resumen.getRange('Z1');
   const isInitialized = String(INIT_MARKER_CELL.getValue()) === 'INIT_v2';
 
-  // Run ONCE: lay out headers/labels and default zeros for manual cells if blank.
   if (!isInitialized) {
     resumen.getRange(1,1,1,2).setValues([['Métrica','Valor']]);
     resumen.setFrozenRows(1);
 
-    // Labels
     L(2, 'Mes');
     L(3, 'Año');
-
     L(5, 'Total Ingresos (mes)');
     L(6, 'Total Egresos (mes)');
 
-    // Manual adicionales (only set zeros IF EMPTY, so user input persists)
     const ING_ADIC_START = 8;
     for (let i = 0; i < 8; i++) {
       L(ING_ADIC_START + i, `Ingreso adicional ${i+1}`);
@@ -482,40 +445,30 @@ function ensureConsolidatedSheets_(ss, dateStr) {
       setIfEmpty(EGR_ADIC_START + i, 0);
     }
     L(26, 'Total Egresos + Adicionales (mes)');
-
     L(28, 'Balance (Ingresos - [Egresos + Adicionales]) (mes)');
-
     L(30, 'Acumulado Ingresos (año)');
     setIfEmpty(30, 0);
     L(31, 'Acumulado Egresos (año)');
     setIfEmpty(31, 0);
     L(32, 'Acumulado Balance (año)');
 
-    // Mark as initialized
     INIT_MARKER_CELL.setValue('INIT_v2');
   }
 
-  // Always (idempotent): set month/year selectors and formulas.
   V(2, monthNum);
   V(3, yearNum);
 
-  // Monthly base totals (CI col I, CE col E) — robust SUMIFS with VALUE()
   F(5, '=IFERROR(SUMIFS(Consolidado_Ingresos!I:I,Consolidado_Ingresos!B:B,VALUE($B$2),Consolidado_Ingresos!C:C,VALUE($B$3)),0)');
   F(6, '=IFERROR(SUMIFS(Consolidado_Egresos!E:E,Consolidado_Egresos!B:B,VALUE($B$2),Consolidado_Egresos!C:C,VALUE($B$3)),0)');
-
-  // Totals including manual adicionales (do NOT touch B8:B15 or B18:B25 values)
   F(16, '=IFERROR($B$5,0)+IFERROR(SUM($B$8:$B$15),0)');
   F(26, '=IFERROR($B$6,0)+IFERROR(SUM($B$18:$B$25),0)');
   F(28, '=IFERROR($B$16,0)-IFERROR($B$26,0)');
-
-  // Year accumulators (values written by the YTD refresher)
   F(32, '=N($B$30)-N($B$31)');
 
   return { ci, ce, resumen, monthNum, yearNum, monthTag: `${y}-${m}` };
 }
 
 /************ CONSOLIDADO DEDUPE HELPER ************/
-// Elimina filas existentes si coinciden por FECHA (col dateColIndex) o por ID (col idColIndex).
 function removeExistingForDateOrIds_(sheet, dateStr, idSet, idColIndex, dateColIndex) {
   const last = sheet.getLastRow();
   if (last < 2) return 0;
@@ -620,7 +573,7 @@ function addIncome(ing) {
   const valuesOld = [
     new Date(),
     ing.date || "",
-    "", // paciente_id
+    "",
     ing.patientName || "",
     ing.servicesText || "",
     ing.payment || "",
@@ -638,7 +591,6 @@ function updateIncome(ing) {
   const targetDate = ing.date;
   const sourceDate = ing.previousDate || ing.date;
 
-  // Abrir hoja origen
   const ssSrc = getOrCreateDailySpreadsheet_(sourceDate);
   const { ingresos: shSrc } = ensureDailySheets_(ssSrc);
 
@@ -646,7 +598,6 @@ function updateIncome(ing) {
 
   const row = findRowByHeaderId_(shSrc, ing.ingresoId, 'ingreso_id');
 
-  // Mismo día → actualizar en sitio
   if (sourceDate === targetDate) {
     if (row === -1) throw new Error('Ingreso no encontrado');
     const h = getHeaderMap_(shSrc);
@@ -665,7 +616,7 @@ function updateIncome(ing) {
     const valsOld = [
       new Date(),
       ing.date || "",
-      "", // paciente_id
+      "",
       ing.patientName || "",
       ing.servicesText || "",
       ing.payment || "",
@@ -678,7 +629,6 @@ function updateIncome(ing) {
     return { ok: true, url: ssSrc.getUrl(), sheetName: 'Ingresos', moved: false };
   }
 
-  // Fecha cambió → mover fila
   if (row === -1) throw new Error('Ingreso no encontrado');
   shSrc.deleteRow(row);
 
@@ -698,7 +648,7 @@ function updateIncome(ing) {
   const valsOld = [
     new Date(),
     targetDate || "",
-    "", // paciente_id
+    "",
     ing.patientName || "",
     ing.servicesText || "",
     ing.payment || "",
@@ -772,7 +722,6 @@ function updateExpense(exp) {
     return { ok: true, url: ssSrc.getUrl(), sheetName: 'Egresos', moved: false };
   }
 
-  // mover entre días
   if (row === -1) throw new Error('Egreso no encontrado');
   shSrc.deleteRow(row);
 
@@ -808,14 +757,12 @@ function deleteExpense(payload) {
   return { ok: true, url: ss.getUrl(), sheetName: 'Egresos' };
 }
 
-/************ API: CATALOGO (GLOBAL PERSISTENCE) ************/
+/************ API: CATALOGO ************/
 function saveCatalog(dateStr, items) {
   if (!Array.isArray(items)) throw new Error('Items inválidos');
 
-  // 1) Guardar en el catálogo GLOBAL (fuente de verdad)
   const globalUrl = writeGlobalCatalog_(items);
 
-  // 2) Espejo (opcional) en la hoja del día
   if (dateStr) {
     const ssDaily = getOrCreateDailySpreadsheet_(dateStr);
     const { catalogo } = ensureDailySheets_(ssDaily);
@@ -831,17 +778,15 @@ function saveCatalog(dateStr, items) {
   return { ok: true, url: globalUrl, sheetName: 'Catalogo', count: items.length, scope: 'global' };
 }
 
-/************ API: READ (sync multi-dispositivo) ************/
+/************ API: READ ************/
 function getDayData(dateStr) {
   if (!dateStr) throw new Error('Falta fecha');
   const ss = getOrCreateDailySpreadsheet_(dateStr);
   const { ingresos, egresos, catalogo } = ensureDailySheets_(ss);
 
-  // Backfill IDs por si faltan en filas antiguas
   backfillIdsIfMissing_(ingresos, 'ingreso_id');
   backfillIdsIfMissing_(egresos, 'egreso_id');
 
-  // Ingresos (compat: viejo layout con paciente_id vs nuevo sin paciente_id)
   const ingValues = ingresos.getDataRange().getValues();
   const incomes = [];
   if (ingValues.length > 0) {
@@ -877,7 +822,6 @@ function getDayData(dateStr) {
     }
   }
 
-  // Egresos
   const egValues = egresos.getDataRange().getValues();
   const expenses = [];
   for (let i = 1; i < egValues.length; i++) {
@@ -892,7 +836,6 @@ function getDayData(dateStr) {
     });
   }
 
-  // Catálogo: preferir GLOBAL
   const global = readGlobalCatalog_();
   const catalogItems = (global.items && global.items.length)
     ? global.items
@@ -921,10 +864,10 @@ function getDayData(dateStr) {
   };
 }
 
-/************ (NUEVO) Helpers para YTD leyendo Resumen mensual ************/
+/************ YTD HELPERS ************/
 function getConsolidatedFilesForYear_(yearNum) {
   const out = [];
-  const prefix = `ODOMSA-Consolidado-${yearNum}-`; // e.g., ODOMSA-Consolidado-2025-09
+  const prefix = `ODOMSA-Consolidado-${yearNum}-`;
   if (PARENT_FOLDER_ID && PARENT_FOLDER_ID.trim()) {
     const folder = DriveApp.getFolderById(PARENT_FOLDER_ID.trim());
     const it = folder.getFiles();
@@ -962,17 +905,11 @@ function findResumenValueByLabel_(ss, labelText) {
   return isNaN(num) ? 0 : num;
 }
 
-/**
- * Lee de cada archivo mensual (Consolidado) los valores del Resumen:
- *  - "Total Ingresos + Adicionales (mes)"
- *  - "Total Egresos + Adicionales (mes)"
- * y suma para el año seleccionado. Escribe el YTD en B30 y B31 del Resumen actual.
- */
 function refreshResumenAnnualFromMonthlyResumen_(consSS) {
   const resumen = consSS.getSheetByName('Resumen');
   if (!resumen) return;
 
-  const yearNum = Number(resumen.getRange(3, 2).getValue()); // B3
+  const yearNum = Number(resumen.getRange(3, 2).getValue());
   if (!yearNum) return;
 
   const files = getConsolidatedFilesForYear_(yearNum);
@@ -986,16 +923,14 @@ function refreshResumenAnnualFromMonthlyResumen_(consSS) {
     ytdEgr += Number(egrMes) || 0;
   });
 
-  resumen.getRange(30, 2).setValue(ytdIng); // B30
-  resumen.getRange(31, 2).setValue(ytdEgr); // B31
-  // B32 ya es = B30 - B31
+  resumen.getRange(30, 2).setValue(ytdIng);
+  resumen.getRange(31, 2).setValue(ytdEgr);
 }
 
-/************ API: CONSOLIDAR DÍA (robusto e idempotente) ************/
+/************ API: CONSOLIDAR DÍA ************/
 function consolidateDay(dateStr) {
   if (!dateStr) throw new Error('Falta fecha');
 
-  // Abrir archivos
   const dailySS = getOrCreateDailySpreadsheet_(dateStr);
   const { ingresos, egresos } = ensureDailySheets_(dailySS);
 
@@ -1003,30 +938,26 @@ function consolidateDay(dateStr) {
   const { ci, ce, resumen, monthNum, yearNum, monthTag } =
     ensureConsolidatedSheets_(consSS, dateStr);
 
-  // Leer valores del día
   const ingVals = ingresos.getDataRange().getValues();
   const egVals  = egresos.getDataRange().getValues();
 
-  // Detectar layout de ingresos
   const ingHeader = ingVals.length ? ingVals[0].map(s => String(s||'').toLowerCase()) : [];
   const hasOld = ingHeader.includes('paciente_id') || ingHeader.includes('paciente id');
 
-  // Recolectar IDs del día (para dedupe)
   const dayIngresoIds = new Set();
   const dayEgresoIds  = new Set();
 
-  // Preparar lotes
   const batchIng = [];
   for (let i = 1; i < ingVals.length; i++) {
     const r = ingVals[i];
-    if (!r[1]) continue; // no fecha
+    if (!r[1]) continue;
     if (hasOld) {
       const id = String(r[8] || "");
       if (id) dayIngresoIds.add(id);
       batchIng.push([
         String(r[1] || ""), monthNum, yearNum,
-        String(r[2] || ""), // paciente_id histórico
-        String(r[3] || ""), // paciente_nombre
+        String(r[2] || ""),
+        String(r[3] || ""),
         String(r[4] || ""), String(r[5] || ""), String(r[6] || ""),
         Number(r[7] || 0),  id,  dailySS.getName()
       ]);
@@ -1035,8 +966,8 @@ function consolidateDay(dateStr) {
       if (id) dayIngresoIds.add(id);
       batchIng.push([
         String(r[1] || ""), monthNum, yearNum,
-        "",                 // paciente_id
-        String(r[2] || ""), // paciente_nombre
+        "",
+        String(r[2] || ""),
         String(r[3] || ""), String(r[4] || ""), String(r[5] || ""),
         Number(r[6] || 0),  id,  dailySS.getName()
       ]);
@@ -1046,7 +977,7 @@ function consolidateDay(dateStr) {
   const batchEgr = [];
   for (let i = 1; i < egVals.length; i++) {
     const r = egVals[i];
-    if (!r[1]) continue; // no fecha
+    if (!r[1]) continue;
     const id = String(r[5] || "");
     if (id) dayEgresoIds.add(id);
     batchEgr.push([
@@ -1056,23 +987,18 @@ function consolidateDay(dateStr) {
     ]);
   }
 
-  // Dedupe por FECHA o por ID antes de insertar
-  removeExistingForDateOrIds_(ci, dateStr, dayIngresoIds, 10, 1); // id col J(10), fecha col A(1)
-  removeExistingForDateOrIds_(ce, dateStr, dayEgresoIds, 7,  1);  // id col G(7),  fecha col A(1)
+  removeExistingForDateOrIds_(ci, dateStr, dayIngresoIds, 10, 1);
+  removeExistingForDateOrIds_(ce, dateStr, dayEgresoIds, 7,  1);
 
-  // Insertar
   if (batchIng.length) ci.getRange(ci.getLastRow() + 1, 1, batchIng.length, batchIng[0].length).setValues(batchIng);
   if (batchEgr.length) ce.getRange(ce.getLastRow() + 1, 1, batchEgr.length, batchEgr[0].length).setValues(batchEgr);
 
-  // Asegurar Mes/Año numéricos
   coerceMonthYearToNumbers_(ci);
   coerceMonthYearToNumbers_(ce);
 
-  // Resumen Mes/Año (las fórmulas usan $B$2/$B$3)
   resumen.getRange(2,2).setValue(monthNum);
   resumen.getRange(3,2).setValue(yearNum);
 
-  // NUEVO: YTD leyendo los totales (con adicionales) desde cada Resumen mensual
   refreshResumenAnnualFromMonthlyResumen_(consSS);
 
   return {
@@ -1085,7 +1011,7 @@ function consolidateDay(dateStr) {
   };
 }
 
-/************ (Opcional) Migrar catálogo de un día a GLOBAL ************/
+/************ MIGRACIÓN (Opcional) ************/
 function migrateDailyCatalogToGlobal_(dateStr) {
   const ss = getOrCreateDailySpreadsheet_(dateStr);
   const sh = ss.getSheetByName('Catalogo');
