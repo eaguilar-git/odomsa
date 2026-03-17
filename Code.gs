@@ -1035,3 +1035,13 @@ function migrateDailyCatalogToGlobal_(dateStr) {
   writeGlobalCatalog_(items);
   return { ok: true, count: items.length };
 }
+
+function generateHashes() {
+  const users = [
+    { email: 'aguilared.96@gmail.com',         password: 'odomsa2026'    },
+    { email: 'sarahi.eu99@gmail.com',           password: 'clinica2026'   },
+    { email: 'ebed_dentista@odomsa.com',        password: 'dentista2026'  },
+    { email: 'asistente_yuli@odomsa.com',       password: 'asistente2026' },
+  ];
+  users.forEach(u => Logger.log(u.email + ' → ' + hashPassword_(u.password)));
+}
