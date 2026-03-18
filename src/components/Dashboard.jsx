@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useAuth } from '../AuthContext'
-import { getDayData, addIncome, updateIncome, deleteIncome, addExpense, updateExpense, deleteExpense, saveCatalog, consolidateDay } from '../api'
+import { getDayData, addIncome, updateIncome, deleteIncome, addExpense, updateExpense, deleteExpense, saveCatalog, consolidateDay, listPatientsPaged } from '../api'
 import { Section, StatCard, Btn, Badge, StatusBar, HNL } from './ui'
 import Patients from './Patients'
 
@@ -54,28 +54,44 @@ const DEFAULT_CATALOG = [
   { key: 'cordal_simple',   name: 'Cordal Simple',                       price: 950  },
 ]
 
-const PAYMENT_TYPES   = ['Efectivo', 'Transferencia Bancaria', 'Tarjeta']
-const EXPENSE_REF     = ['Agua botellón', 'Envíos de prótesis', 'Limpieza', 'Pago de prótesis', 'Descuento']
+const PAYMENT_TYPES = ['Efectivo', 'Transferencia Bancaria', 'Tarjeta']
+const EXPENSE_REF   = ['Agua botellón', 'Envíos de prótesis', 'Limpieza', 'Pago de prótesis', 'Descuento']
+
+// ── Clinic definitions ────────────────────────────────────────────────────────
+const CLINICS = [
+  {
+    name: 'Tomala',
+    subtitle: 'Lempira, Honduras',
+    url: 'https://script.google.com/macros/s/AKfycbw6npDTpziujj1fo2q5GEwlJYZrznqIdfMb7ZFiSJ-2ZOXYSdQ2cyf7hufhE8lO4lAj/exec',
+    patientsUrl: 'https://script.google.com/macros/s/AKfycbxZQ0BkXhTRBZ-EnDEplyzbIlk9yDRltirAZwyRybOsUBTwNAmBwhB9EdOG87jDgcdTcg/exec',
+  },
+  {
+    name: 'San Sebastián',
+    subtitle: 'Honduras',
+    url: 'https://script.google.com/macros/s/AKfycbyKDANcv70fT_3NZHaKNhYPWL6NY8MXAVRjo6q2xzul84MqPbT32Tx7OSORxBl6-y_XtA/exec',
+    patientsUrl: 'https://script.google.com/macros/s/AKfycbz-D5kNjgNCQHLNrxIw61A5PcUb82G-7SnYrPNF2tMUOVL7X2sMnH0jiVGisYBoOoE/exec',
+  },
+]
 
 export default function Dashboard() {
-  const { session, logout, isAdmin } = useAuth()
+  const { session, logout, isAdmin, selectClinic } = useAuth()
   const [activeTab, setActiveTab] = useState('ingresos')
 
   // ── State ─────────────────────────────────────────────────────────────────
   const [date, setDate] = useState(todayISO())
 
-  // ✅ CHANGE 1 — initialize from localStorage cache instead of empty state
   const [data, setData] = useState(() => {
     const cached = readCache(todayISO())
     return cached || { incomes: [], expenses: [], catalog: DEFAULT_CATALOG }
   })
 
-  const [status, setStatus]         = useState('')
-  const [sheetUrl, setSheetUrl]     = useState('')
-  const [lastSync, setLastSync]     = useState(null)
-  const [paused, setPaused]         = useState(false)
+  const [status, setStatus]             = useState('')
+  const [sheetUrl, setSheetUrl]         = useState('')
+  const [lastSync, setLastSync]         = useState(null)
+  const [paused, setPaused]             = useState(false)
   const [catalogDirty, setCatalogDirty] = useState(false)
-  const [loading, setLoading]       = useState(false)
+  const [loading, setLoading]           = useState(false)
+  const [showClinicPicker, setShowClinicPicker] = useState(false)
   const syncTimer = useRef(null)
 
   // Income form
@@ -89,8 +105,35 @@ export default function Dashboard() {
   const [editingExpenseId, setEditingExpenseId]                   = useState(null)
   const [editingExpenseOriginalDate, setEditingExpenseOriginalDate] = useState(null)
 
-  // ✅ Prune old cache entries once on mount
+  // ✅ Prune old day cache entries once on mount
   useEffect(() => { pruneOldCache() }, [])
+
+  // ✅ Silently pre-fetch patient list page 1 on mount + whenever clinic changes
+  useEffect(() => {
+    const prefetch = async () => {
+      try {
+        const res   = await listPatientsPaged(1, 20)
+        const rows  = Array.isArray(res) ? res : (res.items || res.patients || res.rows || [])
+        const total = res.totalPages || (res.total ? Math.ceil(res.total / 20) : 1) || 1
+        localStorage.setItem('odomsa_patients_list_1', JSON.stringify({ rows, totalPages: total }))
+      } catch {} // silent — Patients tab will fetch normally if this fails
+    }
+    prefetch()
+  }, [session?.clinicUrl])
+
+  // ── Clinic switcher ───────────────────────────────────────────────────────
+  const handleSwitchClinic = (clinic) => {
+    selectClinic(clinic)
+    setShowClinicPicker(false)
+    // Clear patient cache so new clinic's patients load fresh
+    Object.keys(localStorage)
+      .filter(k => k.startsWith('odomsa_patients_') || k.startsWith('odomsa_patient_'))
+      .forEach(k => localStorage.removeItem(k))
+    // Reset dashboard
+    setData({ incomes: [], expenses: [], catalog: DEFAULT_CATALOG })
+    setStatus('')
+    setSheetUrl('')
+  }
 
   // ── Data fetching ─────────────────────────────────────────────────────────
   const fetchDay = async (d = date) => {
@@ -106,7 +149,6 @@ export default function Dashboard() {
         catalog:  (res.catalog  && res.catalog.length) ? res.catalog : DEFAULT_CATALOG,
       }
       setData(state)
-      // ✅ CHANGE 2 — save fresh data to localStorage after every successful fetch
       writeCache(d, state)
       setSheetUrl(res.url || '')
       setLastSync(new Date())
@@ -120,7 +162,6 @@ export default function Dashboard() {
 
   useEffect(() => { fetchDay(date) }, [date])
 
-  // ✅ CHANGE 3 — auto-sync slowed from 20s to 120s (30 calls/hr instead of 180)
   useEffect(() => {
     if (paused || catalogDirty) { clearInterval(syncTimer.current); syncTimer.current = null; return }
     const start = () => { if (!syncTimer.current) syncTimer.current = setInterval(() => fetchDay(date), 120000) }
@@ -139,7 +180,6 @@ export default function Dashboard() {
     setStatus('')
     setSheetUrl('')
     clearForms()
-    // ✅ CHANGE 4 — load cached data for the new date instantly
     const cached = readCache(newDate)
     setData(cached || { incomes: [], expenses: [], catalog: DEFAULT_CATALOG })
   }
@@ -170,7 +210,6 @@ export default function Dashboard() {
     setServiceAdder({ key: '', qty: 1, price: '', customName: '' })
   }
 
-  // ✅ CHANGE 5 — Optimistic UI for add + edit income
   const submitIncome = async () => {
     if (!incomeForm.patientName?.trim()) return alert('Ingrese el nombre del paciente')
     if (!incomeForm.services.length && !editingIncomeId) return alert('Agregue al menos un servicio')
@@ -180,77 +219,38 @@ export default function Dashboard() {
     const ingresoId     = editingIncomeId || makeId()
     const payload       = { date: incomeForm.date, patientName: incomeForm.patientName, servicesText, payment: incomeForm.payment, notes: incomeForm.notes || '', totalHNL: computedTotal, ingresoId, previousDate: editingIncomeOriginalDate || incomeForm.date }
 
-    // Snapshot form and editing state before clearing
     const formSnapshot       = { ...incomeForm }
     const wasEditing         = editingIncomeId
     const wasEditingOrigDate = editingIncomeOriginalDate
 
     if (wasEditing) {
-      // EDIT — optimistically update the existing row
       const originalRecord = data.incomes.find(r => r.id === wasEditing)
-      setData(prev => ({
-        ...prev,
-        incomes: prev.incomes.map(r =>
-          r.id === wasEditing
-            ? { ...r, ...payload, id: wasEditing, _pending: true }
-            : r
-        )
-      }))
+      setData(prev => ({ ...prev, incomes: prev.incomes.map(r => r.id === wasEditing ? { ...r, ...payload, id: wasEditing, _pending: true } : r) }))
       setEditingIncomeId(null); setEditingIncomeOriginalDate(null)
       setIncomeForm({ patientName: '', services: [], date, payment: PAYMENT_TYPES[0], notes: '', totalHNL: 0 })
       setStatus('Actualizando ingreso…')
-
       try {
         const res = await updateIncome(payload)
         setStatus(res.moved ? 'Ingreso movido ✔' : 'Ingreso actualizado ✔')
         if (res.url) setSheetUrl(res.url)
-        // Confirm — remove pending flag
-        setData(prev => {
-          const updated = { ...prev, incomes: prev.incomes.map(r => r.id === wasEditing ? { ...r, _pending: false } : r) }
-          writeCache(date, updated)
-          return updated
-        })
+        setData(prev => { const u = { ...prev, incomes: prev.incomes.map(r => r.id === wasEditing ? { ...r, _pending: false } : r) }; writeCache(date, u); return u })
       } catch (err) {
-        // Rollback — restore original record and re-open form
-        setData(prev => ({
-          ...prev,
-          incomes: prev.incomes.map(r => r.id === wasEditing ? originalRecord : r)
-        }))
-        setEditingIncomeId(wasEditing)
-        setEditingIncomeOriginalDate(wasEditingOrigDate)
+        setData(prev => ({ ...prev, incomes: prev.incomes.map(r => r.id === wasEditing ? originalRecord : r) }))
+        setEditingIncomeId(wasEditing); setEditingIncomeOriginalDate(wasEditingOrigDate)
         setIncomeForm(formSnapshot)
         setStatus('Error al actualizar. Cambios revertidos — intenta de nuevo.')
       }
-
     } else {
-      // ADD — optimistically insert new row immediately
-      const optimisticRecord = {
-        id:           ingresoId,
-        date:         incomeForm.date,
-        patientName:  incomeForm.patientName,
-        servicesText,
-        payment:      incomeForm.payment,
-        notes:        incomeForm.notes || '',
-        totalHNL:     computedTotal,
-        services:     incomeForm.services,
-        _pending:     true,
-      }
+      const optimisticRecord = { id: ingresoId, date: incomeForm.date, patientName: incomeForm.patientName, servicesText, payment: incomeForm.payment, notes: incomeForm.notes || '', totalHNL: computedTotal, services: incomeForm.services, _pending: true }
       setData(prev => ({ ...prev, incomes: [...prev.incomes, optimisticRecord] }))
       setIncomeForm({ patientName: '', services: [], date, payment: PAYMENT_TYPES[0], notes: '', totalHNL: 0 })
       setStatus('Guardando ingreso…')
-
       try {
         const res = await addIncome(payload)
         setStatus('Ingreso guardado ✔')
         if (res.url) setSheetUrl(res.url)
-        // Confirm — remove pending flag
-        setData(prev => {
-          const updated = { ...prev, incomes: prev.incomes.map(r => r.id === ingresoId ? { ...r, _pending: false } : r) }
-          writeCache(date, updated)
-          return updated
-        })
+        setData(prev => { const u = { ...prev, incomes: prev.incomes.map(r => r.id === ingresoId ? { ...r, _pending: false } : r) }; writeCache(date, u); return u })
       } catch (err) {
-        // Rollback — remove the optimistic record, restore the form
         setData(prev => ({ ...prev, incomes: prev.incomes.filter(r => r.id !== ingresoId) }))
         setIncomeForm(formSnapshot)
         setStatus('Error al guardar. Datos restaurados — intenta de nuevo.')
@@ -266,33 +266,22 @@ export default function Dashboard() {
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
-  // ✅ CHANGE 6 — Optimistic UI for delete income
   const handleDeleteIncome = async (id) => {
     const row = data.incomes.find(x => x.id === id)
     if (!row || !confirm('¿Eliminar este ingreso?')) return
-
-    // Remove from screen immediately
     setData(prev => ({ ...prev, incomes: prev.incomes.filter(r => r.id !== id) }))
     setStatus('Eliminando…')
-
     try {
       await deleteIncome({ date: row.date, ingresoId: id, previousDate: row.date })
       setStatus('Ingreso eliminado ✔')
-      // Update cache with deletion confirmed
       setData(prev => { writeCache(date, prev); return prev })
     } catch (err) {
-      // Rollback — restore the deleted record
-      setData(prev => ({
-        ...prev,
-        incomes: [...prev.incomes, row].sort((a, b) => (a.date || '').localeCompare(b.date || ''))
-      }))
+      setData(prev => ({ ...prev, incomes: [...prev.incomes, row].sort((a, b) => (a.date || '').localeCompare(b.date || '')) }))
       setStatus('Error al eliminar. El registro fue restaurado.')
     }
   }
 
   // ── Expense helpers ───────────────────────────────────────────────────────
-
-  // ✅ CHANGE 7 — Optimistic UI for add + edit expense
   const submitExpense = async () => {
     const amt = Number(expenseForm.amount)
     if (!expenseForm.concept?.trim()) return alert('Ingrese el concepto')
@@ -306,63 +295,32 @@ export default function Dashboard() {
     const wasEditingOrigDate = editingExpenseOriginalDate
 
     if (wasEditing) {
-      // EDIT — optimistically update the existing row
       const originalRecord = data.expenses.find(r => r.id === wasEditing)
-      setData(prev => ({
-        ...prev,
-        expenses: prev.expenses.map(r =>
-          r.id === wasEditing
-            ? { ...r, ...payload, id: wasEditing, _pending: true }
-            : r
-        )
-      }))
+      setData(prev => ({ ...prev, expenses: prev.expenses.map(r => r.id === wasEditing ? { ...r, ...payload, id: wasEditing, _pending: true } : r) }))
       setEditingExpenseId(null); setEditingExpenseOriginalDate(null)
       setExpenseForm({ date, concept: '', amount: '', notes: '' })
       setStatus('Actualizando egreso…')
-
       try {
         const res = await updateExpense(payload)
         setStatus(res.moved ? 'Egreso movido ✔' : 'Egreso actualizado ✔')
         if (res.url) setSheetUrl(res.url)
-        setData(prev => {
-          const updated = { ...prev, expenses: prev.expenses.map(r => r.id === wasEditing ? { ...r, _pending: false } : r) }
-          writeCache(date, updated)
-          return updated
-        })
+        setData(prev => { const u = { ...prev, expenses: prev.expenses.map(r => r.id === wasEditing ? { ...r, _pending: false } : r) }; writeCache(date, u); return u })
       } catch (err) {
-        setData(prev => ({
-          ...prev,
-          expenses: prev.expenses.map(r => r.id === wasEditing ? originalRecord : r)
-        }))
-        setEditingExpenseId(wasEditing)
-        setEditingExpenseOriginalDate(wasEditingOrigDate)
+        setData(prev => ({ ...prev, expenses: prev.expenses.map(r => r.id === wasEditing ? originalRecord : r) }))
+        setEditingExpenseId(wasEditing); setEditingExpenseOriginalDate(wasEditingOrigDate)
         setExpenseForm(formSnapshot)
         setStatus('Error al actualizar. Cambios revertidos — intenta de nuevo.')
       }
-
     } else {
-      // ADD — optimistically insert new row immediately
-      const optimisticRecord = {
-        id:      egresoId,
-        date:    expenseForm.date,
-        concept: expenseForm.concept,
-        amount:  amt,
-        notes:   expenseForm.notes || '',
-        _pending: true,
-      }
+      const optimisticRecord = { id: egresoId, date: expenseForm.date, concept: expenseForm.concept, amount: amt, notes: expenseForm.notes || '', _pending: true }
       setData(prev => ({ ...prev, expenses: [...prev.expenses, optimisticRecord] }))
       setExpenseForm({ date, concept: '', amount: '', notes: '' })
       setStatus('Guardando egreso…')
-
       try {
         const res = await addExpense(payload)
         setStatus('Egreso guardado ✔')
         if (res.url) setSheetUrl(res.url)
-        setData(prev => {
-          const updated = { ...prev, expenses: prev.expenses.map(r => r.id === egresoId ? { ...r, _pending: false } : r) }
-          writeCache(date, updated)
-          return updated
-        })
+        setData(prev => { const u = { ...prev, expenses: prev.expenses.map(r => r.id === egresoId ? { ...r, _pending: false } : r) }; writeCache(date, u); return u })
       } catch (err) {
         setData(prev => ({ ...prev, expenses: prev.expenses.filter(r => r.id !== egresoId) }))
         setExpenseForm(formSnapshot)
@@ -379,23 +337,17 @@ export default function Dashboard() {
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
-  // ✅ CHANGE 8 — Optimistic UI for delete expense
   const handleDeleteExpense = async (id) => {
     const row = data.expenses.find(x => x.id === id)
     if (!row || !confirm('¿Eliminar este egreso?')) return
-
     setData(prev => ({ ...prev, expenses: prev.expenses.filter(r => r.id !== id) }))
     setStatus('Eliminando…')
-
     try {
       await deleteExpense({ date: row.date, egresoId: id, previousDate: row.date })
       setStatus('Egreso eliminado ✔')
       setData(prev => { writeCache(date, prev); return prev })
     } catch (err) {
-      setData(prev => ({
-        ...prev,
-        expenses: [...prev.expenses, row].sort((a, b) => (a.date || '').localeCompare(b.date || ''))
-      }))
+      setData(prev => ({ ...prev, expenses: [...prev.expenses, row].sort((a, b) => (a.date || '').localeCompare(b.date || '')) }))
       setStatus('Error al eliminar. El registro fue restaurado.')
     }
   }
@@ -429,7 +381,7 @@ export default function Dashboard() {
   const dayIncome   = data.incomes.reduce((s, x) => s + rowTotal(x), 0)
   const dayExpenses = data.expenses.reduce((s, e) => s + (Number(e.amount) || 0), 0)
   const dayBalance  = dayIncome - dayExpenses
-  const balPos = dayBalance >= 0
+  const balPos      = dayBalance >= 0
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
@@ -453,7 +405,40 @@ export default function Dashboard() {
               <Badge color={isAdmin ? 'teal' : 'muted'}>{isAdmin ? 'Admin' : 'Staff'}</Badge>
             </div>
           </div>
-          <Btn variant="ghost" size="sm" onClick={logout} style={{ width: '100%', marginTop: '0.75rem' }}>
+
+          {/* ✅ Clinic switcher — admin only */}
+          {isAdmin && (
+            <div style={{ position: 'relative', marginTop: '0.75rem' }}>
+              <button
+                onClick={() => setShowClinicPicker(v => !v)}
+                style={{ width: '100%', padding: '0.5rem 0.85rem', background: 'rgba(255,255,255,0.12)', border: '1px solid rgba(255,255,255,0.25)', borderRadius: 'var(--radius-sm)', color: '#fff', fontSize: '0.8rem', cursor: 'pointer', textAlign: 'left', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+              >
+                <span>🏥 {session?.clinicName || 'Clínica'}</span>
+                <span style={{ opacity: 0.7 }}>⇄</span>
+              </button>
+              {showClinicPicker && (
+                <div style={{ position: 'absolute', bottom: '110%', left: 0, right: 0, background: '#fff', border: '1.5px solid var(--border)', borderRadius: 'var(--radius)', boxShadow: '0 8px 24px rgba(0,0,0,0.15)', zIndex: 100, overflow: 'hidden' }}>
+                  <div style={{ padding: '0.5rem 0.75rem', fontSize: '0.7rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--ink-muted)', borderBottom: '1px solid var(--border)' }}>
+                    Cambiar clínica
+                  </div>
+                  {CLINICS.map(c => (
+                    <button
+                      key={c.name}
+                      onClick={() => handleSwitchClinic(c)}
+                      style={{ width: '100%', padding: '0.65rem 0.75rem', background: session?.clinicName === c.name ? 'var(--teal-light)' : '#fff', border: 'none', borderBottom: '1px solid var(--border)', cursor: 'pointer', textAlign: 'left' }}
+                    >
+                      <div style={{ fontSize: '0.875rem', fontWeight: 600, color: session?.clinicName === c.name ? 'var(--teal-dark)' : 'var(--ink)' }}>
+                        {session?.clinicName === c.name ? '✓ ' : ''}{c.name}
+                      </div>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--ink-muted)' }}>{c.subtitle}</div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          <Btn variant="ghost" size="sm" onClick={logout} style={{ width: '100%', marginTop: '0.5rem' }}>
             Cerrar sesión
           </Btn>
         </div>
@@ -491,9 +476,9 @@ export default function Dashboard() {
         {/* KPIs */}
         {isAdmin && (
           <div style={kpiGrid} className="fade-up">
-            <StatCard label="Pacientes hoy"  value={data.incomes.length} />
-            <StatCard label="Ingresos"  value={HNL(dayIncome)}   accent="var(--green)"        bg="var(--green-light)"  border="var(--green-light)" />
-            <StatCard label="Egresos"   value={HNL(dayExpenses)} accent="var(--red)"          bg="var(--red-light)"   border="var(--red-light)" />
+            <StatCard label="Pacientes hoy" value={data.incomes.length} />
+            <StatCard label="Ingresos"  value={HNL(dayIncome)}   accent="var(--green)"  bg="var(--green-light)"  border="var(--green-light)" />
+            <StatCard label="Egresos"   value={HNL(dayExpenses)} accent="var(--red)"    bg="var(--red-light)"    border="var(--red-light)" />
             <StatCard label="Balance"   value={HNL(dayBalance)}  accent={balPos ? 'var(--teal)' : 'var(--amber)'} bg={balPos ? 'var(--teal-light)' : 'var(--amber-light)'} border={balPos ? 'var(--teal-light)' : 'var(--amber-light)'} />
           </div>
         )}
@@ -592,7 +577,6 @@ export default function Dashboard() {
             </tr></thead>
             <tbody>
               {data.incomes.length === 0 && <tr><td colSpan={6} style={{ ...td, color: 'var(--ink-muted)', padding: '1.5rem 0.75rem' }}>Sin ingresos todavía.</td></tr>}
-              {/* ✅ CHANGE 9 — pending visual indicator on income rows */}
               {data.incomes.map(ing => (
                 <tr key={ing.id} style={{ ...trow, opacity: ing._pending ? 0.55 : 1, transition: 'opacity 0.3s ease' }}>
                   <td style={td}>{ing.date}</td>
@@ -647,7 +631,6 @@ export default function Dashboard() {
             </tr></thead>
             <tbody>
               {data.expenses.length === 0 && <tr><td colSpan={5} style={{ ...td, color: 'var(--ink-muted)', padding: '1.5rem 0.75rem' }}>Sin egresos todavía.</td></tr>}
-              {/* ✅ CHANGE 10 — pending visual indicator on expense rows */}
               {data.expenses.map(e => (
                 <tr key={e.id} style={{ ...trow, opacity: e._pending ? 0.55 : 1, transition: 'opacity 0.3s ease' }}>
                   <td style={td}>{e.date}</td>
@@ -706,11 +689,11 @@ export default function Dashboard() {
 }
 
 // ── Mini components ───────────────────────────────────────────────────────────
-const inputStyle = { width: '100%', padding: '0.6rem 0.85rem', border: '1.5px solid var(--border)', borderRadius: 'var(--radius-sm)', background: '#fff', color: 'var(--ink)', fontSize: '0.9rem', outline: 'none' }
-const Input  = ({ style: extra, ...p }) => <input  style={{ ...inputStyle, ...extra }} {...p} />
-const Select = ({ children, style: extra, ...p }) => <select style={{ ...inputStyle, ...extra }} {...p}>{children}</select>
-const FieldLabel = ({ children }) => <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--ink-soft)', marginBottom: '0.35rem' }}>{children}</label>
-const NavItem = ({ icon, label, active, onClick }) => (
+const inputStyle  = { width: '100%', padding: '0.6rem 0.85rem', border: '1.5px solid var(--border)', borderRadius: 'var(--radius-sm)', background: '#fff', color: 'var(--ink)', fontSize: '0.9rem', outline: 'none' }
+const Input       = ({ style: extra, ...p }) => <input  style={{ ...inputStyle, ...extra }} {...p} />
+const Select      = ({ children, style: extra, ...p }) => <select style={{ ...inputStyle, ...extra }} {...p}>{children}</select>
+const FieldLabel  = ({ children }) => <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--ink-soft)', marginBottom: '0.35rem' }}>{children}</label>
+const NavItem     = ({ icon, label, active, onClick }) => (
   <div onClick={onClick} style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '0.6rem 1rem', borderRadius: 'var(--radius-sm)', background: active ? 'rgba(255,255,255,0.25)' : 'rgba(255,255,255,0.1)', color: '#fff', fontSize: '0.875rem', fontWeight: active ? 600 : 500, cursor: 'pointer', transition: 'background 0.15s' }}>
     <span>{icon}</span>{label}
   </div>
