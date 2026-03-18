@@ -7,6 +7,37 @@ import Patients from './Patients'
 const todayISO = () => new Date().toISOString().slice(0, 10)
 const makeId   = () => Math.random().toString(36).slice(2, 9)
 
+// ── localStorage helpers ──────────────────────────────────────────────────────
+const CACHE_PREFIX = 'odomsa_cache_'
+
+function readCache(dateStr) {
+  try {
+    const raw = localStorage.getItem(CACHE_PREFIX + dateStr)
+    return raw ? JSON.parse(raw) : null
+  } catch { return null }
+}
+
+function writeCache(dateStr, data) {
+  try {
+    localStorage.setItem(CACHE_PREFIX + dateStr, JSON.stringify(data))
+  } catch {}
+}
+
+function pruneOldCache() {
+  try {
+    const cutoff = new Date()
+    cutoff.setDate(cutoff.getDate() - 30)
+    const cutoffStr = cutoff.toISOString().slice(0, 10)
+    Object.keys(localStorage)
+      .filter(k => k.startsWith(CACHE_PREFIX))
+      .forEach(k => {
+        const d = k.replace(CACHE_PREFIX, '')
+        if (d < cutoffStr) localStorage.removeItem(k)
+      })
+  } catch {}
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 const DEFAULT_CATALOG = [
   { key: 'limpieza',        name: 'Limpieza',                            price: 600  },
   { key: 'limpieza_perio',  name: 'Limpieza con Periodontitis',          price: 750  },
@@ -28,11 +59,17 @@ const EXPENSE_REF     = ['Agua botellón', 'Envíos de prótesis', 'Limpieza', '
 
 export default function Dashboard() {
   const { session, logout, isAdmin } = useAuth()
-  const [activeTab, setActiveTab] = useState('ingresos') // 'ingresos' | 'pacientes'
+  const [activeTab, setActiveTab] = useState('ingresos')
 
   // ── State ─────────────────────────────────────────────────────────────────
-  const [date, setDate]             = useState(todayISO())
-  const [data, setData]             = useState({ incomes: [], expenses: [], catalog: DEFAULT_CATALOG })
+  const [date, setDate] = useState(todayISO())
+
+  // ✅ CHANGE 1 — initialize from localStorage cache instead of empty state
+  const [data, setData] = useState(() => {
+    const cached = readCache(todayISO())
+    return cached || { incomes: [], expenses: [], catalog: DEFAULT_CATALOG }
+  })
+
   const [status, setStatus]         = useState('')
   const [sheetUrl, setSheetUrl]     = useState('')
   const [lastSync, setLastSync]     = useState(null)
@@ -44,13 +81,16 @@ export default function Dashboard() {
   // Income form
   const [incomeForm, setIncomeForm] = useState({ patientName: '', services: [], date: todayISO(), payment: PAYMENT_TYPES[0], notes: '', totalHNL: 0 })
   const [serviceAdder, setServiceAdder] = useState({ key: '', qty: 1, price: '', customName: '' })
-  const [editingIncomeId, setEditingIncomeId]             = useState(null)
+  const [editingIncomeId, setEditingIncomeId]                   = useState(null)
   const [editingIncomeOriginalDate, setEditingIncomeOriginalDate] = useState(null)
 
   // Expense form
   const [expenseForm, setExpenseForm] = useState({ date: todayISO(), concept: '', amount: '', notes: '' })
-  const [editingExpenseId, setEditingExpenseId]             = useState(null)
+  const [editingExpenseId, setEditingExpenseId]                   = useState(null)
   const [editingExpenseOriginalDate, setEditingExpenseOriginalDate] = useState(null)
+
+  // ✅ Prune old cache entries once on mount
+  useEffect(() => { pruneOldCache() }, [])
 
   // ── Data fetching ─────────────────────────────────────────────────────────
   const fetchDay = async (d = date) => {
@@ -66,6 +106,8 @@ export default function Dashboard() {
         catalog:  (res.catalog  && res.catalog.length) ? res.catalog : DEFAULT_CATALOG,
       }
       setData(state)
+      // ✅ CHANGE 2 — save fresh data to localStorage after every successful fetch
+      writeCache(d, state)
       setSheetUrl(res.url || '')
       setLastSync(new Date())
       setStatus('Datos actualizados ✔')
@@ -78,9 +120,10 @@ export default function Dashboard() {
 
   useEffect(() => { fetchDay(date) }, [date])
 
+  // ✅ CHANGE 3 — auto-sync slowed from 20s to 120s (30 calls/hr instead of 180)
   useEffect(() => {
     if (paused || catalogDirty) { clearInterval(syncTimer.current); syncTimer.current = null; return }
-    const start = () => { if (!syncTimer.current) syncTimer.current = setInterval(() => fetchDay(date), 20000) }
+    const start = () => { if (!syncTimer.current) syncTimer.current = setInterval(() => fetchDay(date), 120000) }
     const stop  = () => { clearInterval(syncTimer.current); syncTimer.current = null }
     const onVis = () => document.visibilityState === 'visible' ? start() : stop()
     document.addEventListener('visibilitychange', onVis)
@@ -96,7 +139,9 @@ export default function Dashboard() {
     setStatus('')
     setSheetUrl('')
     clearForms()
-    setData({ incomes: [], expenses: [], catalog: DEFAULT_CATALOG })
+    // ✅ CHANGE 4 — load cached data for the new date instantly
+    const cached = readCache(newDate)
+    setData(cached || { incomes: [], expenses: [], catalog: DEFAULT_CATALOG })
   }
 
   const clearForms = () => {
@@ -125,22 +170,92 @@ export default function Dashboard() {
     setServiceAdder({ key: '', qty: 1, price: '', customName: '' })
   }
 
+  // ✅ CHANGE 5 — Optimistic UI for add + edit income
   const submitIncome = async () => {
     if (!incomeForm.patientName?.trim()) return alert('Ingrese el nombre del paciente')
     if (!incomeForm.services.length && !editingIncomeId) return alert('Agregue al menos un servicio')
-    const servicesText = incomeForm.services.map(s => `${s.name} x${s.qty} (${s.price})`).join('; ')
+
+    const servicesText  = incomeForm.services.map(s => `${s.name} x${s.qty} (${s.price})`).join('; ')
     const computedTotal = incomeForm.services.length ? incomeTotalLocal(incomeForm) : Number(incomeForm.totalHNL || 0)
-    const ingresoId = editingIncomeId || makeId()
-    const payload = { date: incomeForm.date, patientName: incomeForm.patientName, servicesText, payment: incomeForm.payment, notes: incomeForm.notes || '', totalHNL: computedTotal, ingresoId, previousDate: editingIncomeOriginalDate || incomeForm.date }
-    setStatus(editingIncomeId ? 'Actualizando ingreso…' : 'Guardando ingreso…')
-    try {
-      const res = editingIncomeId ? await updateIncome(payload) : await addIncome(payload)
-      setStatus(editingIncomeId ? (res.moved ? 'Ingreso movido ✔' : 'Ingreso actualizado ✔') : 'Ingreso guardado ✔')
-      if (res.url) setSheetUrl(res.url)
-      fetchDay(incomeForm.date)
-    } catch (err) { setStatus('Error: ' + err.message) }
-    setEditingIncomeId(null); setEditingIncomeOriginalDate(null)
-    setIncomeForm({ patientName: '', services: [], date, payment: PAYMENT_TYPES[0], notes: '', totalHNL: 0 })
+    const ingresoId     = editingIncomeId || makeId()
+    const payload       = { date: incomeForm.date, patientName: incomeForm.patientName, servicesText, payment: incomeForm.payment, notes: incomeForm.notes || '', totalHNL: computedTotal, ingresoId, previousDate: editingIncomeOriginalDate || incomeForm.date }
+
+    // Snapshot form and editing state before clearing
+    const formSnapshot       = { ...incomeForm }
+    const wasEditing         = editingIncomeId
+    const wasEditingOrigDate = editingIncomeOriginalDate
+
+    if (wasEditing) {
+      // EDIT — optimistically update the existing row
+      const originalRecord = data.incomes.find(r => r.id === wasEditing)
+      setData(prev => ({
+        ...prev,
+        incomes: prev.incomes.map(r =>
+          r.id === wasEditing
+            ? { ...r, ...payload, id: wasEditing, _pending: true }
+            : r
+        )
+      }))
+      setEditingIncomeId(null); setEditingIncomeOriginalDate(null)
+      setIncomeForm({ patientName: '', services: [], date, payment: PAYMENT_TYPES[0], notes: '', totalHNL: 0 })
+      setStatus('Actualizando ingreso…')
+
+      try {
+        const res = await updateIncome(payload)
+        setStatus(res.moved ? 'Ingreso movido ✔' : 'Ingreso actualizado ✔')
+        if (res.url) setSheetUrl(res.url)
+        // Confirm — remove pending flag
+        setData(prev => {
+          const updated = { ...prev, incomes: prev.incomes.map(r => r.id === wasEditing ? { ...r, _pending: false } : r) }
+          writeCache(date, updated)
+          return updated
+        })
+      } catch (err) {
+        // Rollback — restore original record and re-open form
+        setData(prev => ({
+          ...prev,
+          incomes: prev.incomes.map(r => r.id === wasEditing ? originalRecord : r)
+        }))
+        setEditingIncomeId(wasEditing)
+        setEditingIncomeOriginalDate(wasEditingOrigDate)
+        setIncomeForm(formSnapshot)
+        setStatus('Error al actualizar. Cambios revertidos — intenta de nuevo.')
+      }
+
+    } else {
+      // ADD — optimistically insert new row immediately
+      const optimisticRecord = {
+        id:           ingresoId,
+        date:         incomeForm.date,
+        patientName:  incomeForm.patientName,
+        servicesText,
+        payment:      incomeForm.payment,
+        notes:        incomeForm.notes || '',
+        totalHNL:     computedTotal,
+        services:     incomeForm.services,
+        _pending:     true,
+      }
+      setData(prev => ({ ...prev, incomes: [...prev.incomes, optimisticRecord] }))
+      setIncomeForm({ patientName: '', services: [], date, payment: PAYMENT_TYPES[0], notes: '', totalHNL: 0 })
+      setStatus('Guardando ingreso…')
+
+      try {
+        const res = await addIncome(payload)
+        setStatus('Ingreso guardado ✔')
+        if (res.url) setSheetUrl(res.url)
+        // Confirm — remove pending flag
+        setData(prev => {
+          const updated = { ...prev, incomes: prev.incomes.map(r => r.id === ingresoId ? { ...r, _pending: false } : r) }
+          writeCache(date, updated)
+          return updated
+        })
+      } catch (err) {
+        // Rollback — remove the optimistic record, restore the form
+        setData(prev => ({ ...prev, incomes: prev.incomes.filter(r => r.id !== ingresoId) }))
+        setIncomeForm(formSnapshot)
+        setStatus('Error al guardar. Datos restaurados — intenta de nuevo.')
+      }
+    }
   }
 
   const editIncome = (id) => {
@@ -151,33 +266,109 @@ export default function Dashboard() {
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
+  // ✅ CHANGE 6 — Optimistic UI for delete income
   const handleDeleteIncome = async (id) => {
     const row = data.incomes.find(x => x.id === id)
     if (!row || !confirm('¿Eliminar este ingreso?')) return
+
+    // Remove from screen immediately
+    setData(prev => ({ ...prev, incomes: prev.incomes.filter(r => r.id !== id) }))
     setStatus('Eliminando…')
+
     try {
       await deleteIncome({ date: row.date, ingresoId: id, previousDate: row.date })
       setStatus('Ingreso eliminado ✔')
-      fetchDay(date)
-    } catch (err) { setStatus('Error: ' + err.message) }
+      // Update cache with deletion confirmed
+      setData(prev => { writeCache(date, prev); return prev })
+    } catch (err) {
+      // Rollback — restore the deleted record
+      setData(prev => ({
+        ...prev,
+        incomes: [...prev.incomes, row].sort((a, b) => (a.date || '').localeCompare(b.date || ''))
+      }))
+      setStatus('Error al eliminar. El registro fue restaurado.')
+    }
   }
 
   // ── Expense helpers ───────────────────────────────────────────────────────
+
+  // ✅ CHANGE 7 — Optimistic UI for add + edit expense
   const submitExpense = async () => {
     const amt = Number(expenseForm.amount)
     if (!expenseForm.concept?.trim()) return alert('Ingrese el concepto')
     if (!(amt > 0)) return alert('Ingrese un monto válido')
+
     const egresoId = editingExpenseId || makeId()
-    const payload = { date: expenseForm.date, concept: expenseForm.concept, amount: amt, notes: expenseForm.notes || '', egresoId, previousDate: editingExpenseOriginalDate || expenseForm.date }
-    setStatus(editingExpenseId ? 'Actualizando egreso…' : 'Guardando egreso…')
-    try {
-      const res = editingExpenseId ? await updateExpense(payload) : await addExpense(payload)
-      setStatus(editingExpenseId ? (res.moved ? 'Egreso movido ✔' : 'Egreso actualizado ✔') : 'Egreso guardado ✔')
-      if (res.url) setSheetUrl(res.url)
-      fetchDay(expenseForm.date)
-    } catch (err) { setStatus('Error: ' + err.message) }
-    setEditingExpenseId(null); setEditingExpenseOriginalDate(null)
-    setExpenseForm({ date, concept: '', amount: '', notes: '' })
+    const payload  = { date: expenseForm.date, concept: expenseForm.concept, amount: amt, notes: expenseForm.notes || '', egresoId, previousDate: editingExpenseOriginalDate || expenseForm.date }
+
+    const formSnapshot       = { ...expenseForm }
+    const wasEditing         = editingExpenseId
+    const wasEditingOrigDate = editingExpenseOriginalDate
+
+    if (wasEditing) {
+      // EDIT — optimistically update the existing row
+      const originalRecord = data.expenses.find(r => r.id === wasEditing)
+      setData(prev => ({
+        ...prev,
+        expenses: prev.expenses.map(r =>
+          r.id === wasEditing
+            ? { ...r, ...payload, id: wasEditing, _pending: true }
+            : r
+        )
+      }))
+      setEditingExpenseId(null); setEditingExpenseOriginalDate(null)
+      setExpenseForm({ date, concept: '', amount: '', notes: '' })
+      setStatus('Actualizando egreso…')
+
+      try {
+        const res = await updateExpense(payload)
+        setStatus(res.moved ? 'Egreso movido ✔' : 'Egreso actualizado ✔')
+        if (res.url) setSheetUrl(res.url)
+        setData(prev => {
+          const updated = { ...prev, expenses: prev.expenses.map(r => r.id === wasEditing ? { ...r, _pending: false } : r) }
+          writeCache(date, updated)
+          return updated
+        })
+      } catch (err) {
+        setData(prev => ({
+          ...prev,
+          expenses: prev.expenses.map(r => r.id === wasEditing ? originalRecord : r)
+        }))
+        setEditingExpenseId(wasEditing)
+        setEditingExpenseOriginalDate(wasEditingOrigDate)
+        setExpenseForm(formSnapshot)
+        setStatus('Error al actualizar. Cambios revertidos — intenta de nuevo.')
+      }
+
+    } else {
+      // ADD — optimistically insert new row immediately
+      const optimisticRecord = {
+        id:      egresoId,
+        date:    expenseForm.date,
+        concept: expenseForm.concept,
+        amount:  amt,
+        notes:   expenseForm.notes || '',
+        _pending: true,
+      }
+      setData(prev => ({ ...prev, expenses: [...prev.expenses, optimisticRecord] }))
+      setExpenseForm({ date, concept: '', amount: '', notes: '' })
+      setStatus('Guardando egreso…')
+
+      try {
+        const res = await addExpense(payload)
+        setStatus('Egreso guardado ✔')
+        if (res.url) setSheetUrl(res.url)
+        setData(prev => {
+          const updated = { ...prev, expenses: prev.expenses.map(r => r.id === egresoId ? { ...r, _pending: false } : r) }
+          writeCache(date, updated)
+          return updated
+        })
+      } catch (err) {
+        setData(prev => ({ ...prev, expenses: prev.expenses.filter(r => r.id !== egresoId) }))
+        setExpenseForm(formSnapshot)
+        setStatus('Error al guardar. Datos restaurados — intenta de nuevo.')
+      }
+    }
   }
 
   const editExpense = (id) => {
@@ -188,19 +379,29 @@ export default function Dashboard() {
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
+  // ✅ CHANGE 8 — Optimistic UI for delete expense
   const handleDeleteExpense = async (id) => {
     const row = data.expenses.find(x => x.id === id)
     if (!row || !confirm('¿Eliminar este egreso?')) return
+
+    setData(prev => ({ ...prev, expenses: prev.expenses.filter(r => r.id !== id) }))
     setStatus('Eliminando…')
+
     try {
       await deleteExpense({ date: row.date, egresoId: id, previousDate: row.date })
       setStatus('Egreso eliminado ✔')
-      fetchDay(date)
-    } catch (err) { setStatus('Error: ' + err.message) }
+      setData(prev => { writeCache(date, prev); return prev })
+    } catch (err) {
+      setData(prev => ({
+        ...prev,
+        expenses: [...prev.expenses, row].sort((a, b) => (a.date || '').localeCompare(b.date || ''))
+      }))
+      setStatus('Error al eliminar. El registro fue restaurado.')
+    }
   }
 
   // ── Catalog helpers (admin only) ──────────────────────────────────────────
-  const addCatalogRow    = () => { setCatalogDirty(true); setPaused(true); setData(d => ({ ...d, catalog: [...(d.catalog || []), { key: '', name: '', price: 0 }] })) }
+  const addCatalogRow     = () => { setCatalogDirty(true); setPaused(true); setData(d => ({ ...d, catalog: [...(d.catalog || []), { key: '', name: '', price: 0 }] })) }
   const updateCatalogCell = (idx, field, value) => { setCatalogDirty(true); setPaused(true); setData(d => ({ ...d, catalog: d.catalog.map((r, i) => i === idx ? { ...r, [field]: field === 'price' ? Number(value) || 0 : value } : r) })) }
   const deleteCatalogRow  = (idx) => { setCatalogDirty(true); setPaused(true); setData(d => ({ ...d, catalog: d.catalog.filter((_, i) => i !== idx) })) }
   const handleSaveCatalog = async () => {
@@ -297,7 +498,7 @@ export default function Dashboard() {
           </div>
         )}
 
-        {/* Income form — staff + admin */}
+        {/* Income form */}
         <Section title={editingIncomeId ? '✏️ Editar ingreso' : '➕ Registrar visita'}>
           <div style={formGrid4}>
             <div style={{ gridColumn: 'span 2' }}>
@@ -391,17 +592,21 @@ export default function Dashboard() {
             </tr></thead>
             <tbody>
               {data.incomes.length === 0 && <tr><td colSpan={6} style={{ ...td, color: 'var(--ink-muted)', padding: '1.5rem 0.75rem' }}>Sin ingresos todavía.</td></tr>}
+              {/* ✅ CHANGE 9 — pending visual indicator on income rows */}
               {data.incomes.map(ing => (
-                <tr key={ing.id} style={trow}>
+                <tr key={ing.id} style={{ ...trow, opacity: ing._pending ? 0.55 : 1, transition: 'opacity 0.3s ease' }}>
                   <td style={td}>{ing.date}</td>
-                  <td style={td}>{ing.patientName}</td>
+                  <td style={td}>
+                    {ing.patientName}
+                    {ing._pending && <span style={pendingBadge}>⏳ guardando</span>}
+                  </td>
                   <td style={td}><span style={{ color: 'var(--ink-soft)', fontSize: '0.85rem' }}>{ing.servicesText || '—'}</span></td>
                   <td style={td}><Badge color="muted">{ing.payment}</Badge></td>
                   <td style={{ ...td, fontWeight: 600 }}>{HNL(rowTotal(ing))}</td>
                   <td style={td}>
                     <div style={{ display: 'flex', gap: '0.5rem' }}>
-                      <Btn size="sm" variant="ghost" onClick={() => editIncome(ing.id)}>Editar</Btn>
-                      {isAdmin && <Btn size="sm" variant="danger" onClick={() => handleDeleteIncome(ing.id)}>Eliminar</Btn>}
+                      <Btn size="sm" variant="ghost" onClick={() => editIncome(ing.id)} disabled={!!ing._pending}>Editar</Btn>
+                      {isAdmin && <Btn size="sm" variant="danger" onClick={() => handleDeleteIncome(ing.id)} disabled={!!ing._pending}>Eliminar</Btn>}
                     </div>
                   </td>
                 </tr>
@@ -442,16 +647,20 @@ export default function Dashboard() {
             </tr></thead>
             <tbody>
               {data.expenses.length === 0 && <tr><td colSpan={5} style={{ ...td, color: 'var(--ink-muted)', padding: '1.5rem 0.75rem' }}>Sin egresos todavía.</td></tr>}
+              {/* ✅ CHANGE 10 — pending visual indicator on expense rows */}
               {data.expenses.map(e => (
-                <tr key={e.id} style={trow}>
+                <tr key={e.id} style={{ ...trow, opacity: e._pending ? 0.55 : 1, transition: 'opacity 0.3s ease' }}>
                   <td style={td}>{e.date}</td>
-                  <td style={td}>{e.concept}</td>
+                  <td style={td}>
+                    {e.concept}
+                    {e._pending && <span style={pendingBadge}>⏳ guardando</span>}
+                  </td>
                   <td style={{ ...td, fontWeight: 600 }}>{HNL(e.amount)}</td>
                   <td style={{ ...td, color: 'var(--ink-muted)', fontSize: '0.85rem' }}>{e.notes || '—'}</td>
                   <td style={td}>
                     <div style={{ display: 'flex', gap: '0.5rem' }}>
-                      <Btn size="sm" variant="ghost" onClick={() => editExpense(e.id)}>Editar</Btn>
-                      {isAdmin && <Btn size="sm" variant="danger" onClick={() => handleDeleteExpense(e.id)}>Eliminar</Btn>}
+                      <Btn size="sm" variant="ghost" onClick={() => editExpense(e.id)} disabled={!!e._pending}>Editar</Btn>
+                      {isAdmin && <Btn size="sm" variant="danger" onClick={() => handleDeleteExpense(e.id)} disabled={!!e._pending}>Eliminar</Btn>}
                     </div>
                   </td>
                 </tr>
@@ -508,32 +717,33 @@ const NavItem = ({ icon, label, active, onClick }) => (
 )
 
 // ── Styles ────────────────────────────────────────────────────────────────────
-const layout     = { display: 'flex', minHeight: '100vh' }
-const sidebar    = { width: '240px', flexShrink: 0, background: 'linear-gradient(180deg,#0D9488,#065F46)', display: 'flex', flexDirection: 'column', padding: '1.5rem 1rem' }
-const sideTop    = { textAlign: 'center', marginBottom: '2rem', paddingBottom: '1.5rem', borderBottom: '1px solid rgba(255,255,255,0.15)' }
-const logo       = { fontSize: '1.5rem', color: 'rgba(255,255,255,0.7)', marginBottom: '0.25rem' }
-const logoText   = { fontFamily: "'DM Serif Display',serif", fontSize: '1.5rem', color: '#fff', letterSpacing: '0.1em' }
-const logoBrand  = { fontSize: '0.75rem', color: 'rgba(255,255,255,0.6)', marginTop: '0.2rem' }
-const navItems   = { flex: 1, display: 'flex', flexDirection: 'column', gap: '0.5rem' }
-const sideBottom = { borderTop: '1px solid rgba(255,255,255,0.15)', paddingTop: '1.25rem', marginTop: '1rem' }
-const userInfo   = { display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.5rem' }
-const userAvatar = { width: '36px', height: '36px', borderRadius: '50%', background: 'rgba(255,255,255,0.2)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 600, fontSize: '0.9rem', flexShrink: 0 }
-const userName   = { fontSize: '0.75rem', color: 'rgba(255,255,255,0.8)', wordBreak: 'break-all', marginBottom: '0.25rem' }
-const main       = { flex: 1, padding: '2rem', overflowY: 'auto', background: 'var(--cream)' }
-const pageHeader = { display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '1rem' }
-const pageTitle  = { fontSize: '1.8rem', color: 'var(--ink)' }
-const pageSub    = { fontSize: '0.875rem', color: 'var(--ink-muted)', marginTop: '0.25rem' }
-const datePicker = { display: 'flex', flexDirection: 'column', gap: '0.25rem' }
-const dateLabel  = { fontSize: '0.72rem', fontWeight: 600, textTransform: 'uppercase', color: 'var(--ink-muted)', letterSpacing: '0.04em' }
-const dateInput  = { padding: '0.5rem 0.85rem', border: '1.5px solid var(--border)', borderRadius: 'var(--radius-sm)', background: '#fff', color: 'var(--ink)', fontSize: '0.9rem', outline: 'none' }
-const kpiGrid    = { display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: '1rem', marginBottom: '1.5rem' }
-const formGrid4  = { display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: '1rem' }
-const table      = { width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem' }
-const thead      = { borderBottom: '2px solid var(--border)' }
-const th         = { padding: '0.6rem 0.75rem', textAlign: 'left', fontWeight: 600, fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--ink-muted)' }
-const trow       = { borderBottom: '1px solid var(--border)' }
-const td         = { padding: '0.7rem 0.75rem', verticalAlign: 'middle' }
-const totalBox   = { background: 'var(--cream)', border: '1.5px solid var(--border)', borderRadius: 'var(--radius)', padding: '1.25rem', minWidth: '200px' }
-const totalLabel = { fontSize: '0.75rem', fontWeight: 600, textTransform: 'uppercase', color: 'var(--ink-muted)', letterSpacing: '0.05em', marginBottom: '0.4rem' }
-const totalValue = { fontSize: '1.5rem', fontWeight: 700, color: 'var(--teal-dark)' }
-const footer     = { fontSize: '0.78rem', color: 'var(--ink-muted)', textAlign: 'center', marginTop: '2rem', paddingTop: '1rem', borderTop: '1px solid var(--border)' }
+const layout      = { display: 'flex', minHeight: '100vh' }
+const sidebar     = { width: '240px', flexShrink: 0, background: 'linear-gradient(180deg,#0D9488,#065F46)', display: 'flex', flexDirection: 'column', padding: '1.5rem 1rem' }
+const sideTop     = { textAlign: 'center', marginBottom: '2rem', paddingBottom: '1.5rem', borderBottom: '1px solid rgba(255,255,255,0.15)' }
+const logo        = { fontSize: '1.5rem', color: 'rgba(255,255,255,0.7)', marginBottom: '0.25rem' }
+const logoText    = { fontFamily: "'DM Serif Display',serif", fontSize: '1.5rem', color: '#fff', letterSpacing: '0.1em' }
+const logoBrand   = { fontSize: '0.75rem', color: 'rgba(255,255,255,0.6)', marginTop: '0.2rem' }
+const navItems    = { flex: 1, display: 'flex', flexDirection: 'column', gap: '0.5rem' }
+const sideBottom  = { borderTop: '1px solid rgba(255,255,255,0.15)', paddingTop: '1.25rem', marginTop: '1rem' }
+const userInfo    = { display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.5rem' }
+const userAvatar  = { width: '36px', height: '36px', borderRadius: '50%', background: 'rgba(255,255,255,0.2)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 600, fontSize: '0.9rem', flexShrink: 0 }
+const userName    = { fontSize: '0.75rem', color: 'rgba(255,255,255,0.8)', wordBreak: 'break-all', marginBottom: '0.25rem' }
+const main        = { flex: 1, padding: '2rem', overflowY: 'auto', background: 'var(--cream)' }
+const pageHeader  = { display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '1rem' }
+const pageTitle   = { fontSize: '1.8rem', color: 'var(--ink)' }
+const pageSub     = { fontSize: '0.875rem', color: 'var(--ink-muted)', marginTop: '0.25rem' }
+const datePicker  = { display: 'flex', flexDirection: 'column', gap: '0.25rem' }
+const dateLabel   = { fontSize: '0.72rem', fontWeight: 600, textTransform: 'uppercase', color: 'var(--ink-muted)', letterSpacing: '0.04em' }
+const dateInput   = { padding: '0.5rem 0.85rem', border: '1.5px solid var(--border)', borderRadius: 'var(--radius-sm)', background: '#fff', color: 'var(--ink)', fontSize: '0.9rem', outline: 'none' }
+const kpiGrid     = { display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: '1rem', marginBottom: '1.5rem' }
+const formGrid4   = { display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: '1rem' }
+const table       = { width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem' }
+const thead       = { borderBottom: '2px solid var(--border)' }
+const th          = { padding: '0.6rem 0.75rem', textAlign: 'left', fontWeight: 600, fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--ink-muted)' }
+const trow        = { borderBottom: '1px solid var(--border)' }
+const td          = { padding: '0.7rem 0.75rem', verticalAlign: 'middle' }
+const totalBox    = { background: 'var(--cream)', border: '1.5px solid var(--border)', borderRadius: 'var(--radius)', padding: '1.25rem', minWidth: '200px' }
+const totalLabel  = { fontSize: '0.75rem', fontWeight: 600, textTransform: 'uppercase', color: 'var(--ink-muted)', letterSpacing: '0.05em', marginBottom: '0.4rem' }
+const totalValue  = { fontSize: '1.5rem', fontWeight: 700, color: 'var(--teal-dark)' }
+const footer      = { fontSize: '0.78rem', color: 'var(--ink-muted)', textAlign: 'center', marginTop: '2rem', paddingTop: '1rem', borderTop: '1px solid var(--border)' }
+const pendingBadge = { marginLeft: '0.5rem', fontSize: '0.7rem', color: 'var(--ink-muted)', fontStyle: 'italic' }
