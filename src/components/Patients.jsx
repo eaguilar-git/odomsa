@@ -222,15 +222,58 @@ export default function Patients() {
 
   const handleSearch = async () => {
     if (!query.trim()) return
-    // Search results are always fresh — no cache
-    setSearching(true); setStatus('')
+    const q = query.trim().toLowerCase()
+    setStatus('')
+
+    // 1. Search all cached pages instantly (0ms)
+    const cachedMatches = []
+    let p = 1
+    while (true) {
+      const cached = readListCache(p)
+      if (!cached) break
+      const matches = cached.rows.filter(r =>
+        (r.nombre    || '').toLowerCase().includes(q) ||
+        (r.identidad || '').toLowerCase().includes(q) ||
+        (r.celular   || '').toLowerCase().includes(q)
+      )
+      cachedMatches.push(...matches)
+      if (p >= cached.totalPages) break
+      p++
+    }
+
+    // Show cached results immediately if we found anything
+    if (cachedMatches.length > 0) {
+      setResults(cachedMatches)
+      setStatus(`${cachedMatches.length} resultado(s) — verificando…`)
+    } else {
+      setSearching(true)
+    }
+
+    // 2. Always verify with GAS in background (catches patients on uncached pages)
     try {
       const res  = await findPatients(query.trim())
       const list = Array.isArray(res) ? res : (res.patients || [])
-      setResults(list)
-      if (!list.length) setStatus('No se encontraron pacientes.')
-    } catch (err) { setStatus('Error: ' + err.message) }
-    finally { setSearching(false) }
+
+      if (list.length > 0) {
+        setResults(list)
+        setStatus(`${list.length} resultado(s) encontrado(s).`)
+      } else if (cachedMatches.length === 0) {
+        setResults([])
+        setStatus('No se encontraron pacientes.')
+      } else {
+        // GAS confirmed — remove the "verificando" note
+        setStatus(`${cachedMatches.length} resultado(s) encontrado(s).`)
+      }
+    } catch (err) {
+      // GAS failed but we have cached results — keep showing them
+      if (cachedMatches.length > 0) {
+        setStatus(`${cachedMatches.length} resultado(s) — sin conexión, mostrando datos guardados.`)
+      } else {
+        setStatus('Error: ' + err.message)
+      }
+    } finally {
+      setSearching(false)
+    }
   }
 
   const openPatient = async (identidad, from) => {
