@@ -3,6 +3,33 @@ import { useAuth } from '../AuthContext'
 import { findPatients, listPatientsPaged, getPatientDashboard, createPatient, createVisit } from '../api'
 import { Section, Btn, Badge } from './ui'
 
+// ── localStorage helpers ──────────────────────────────────────────────────────
+const LIST_CACHE_PREFIX    = 'odomsa_patients_list_'
+const PATIENT_CACHE_PREFIX = 'odomsa_patient_'
+
+function readListCache(page) {
+  try {
+    const raw = localStorage.getItem(LIST_CACHE_PREFIX + page)
+    return raw ? JSON.parse(raw) : null
+  } catch { return null }
+}
+
+function writeListCache(page, data) {
+  try { localStorage.setItem(LIST_CACHE_PREFIX + page, JSON.stringify(data)) } catch {}
+}
+
+function readPatientCache(identidad) {
+  try {
+    const raw = localStorage.getItem(PATIENT_CACHE_PREFIX + identidad)
+    return raw ? JSON.parse(raw) : null
+  } catch { return null }
+}
+
+function writePatientCache(identidad, data) {
+  try { localStorage.setItem(PATIENT_CACHE_PREFIX + identidad, JSON.stringify(data)) } catch {}
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 // ── Signature pad ─────────────────────────────────────────────────────────────
 function SignaturePad({ onChange }) {
   const canvasRef = useRef(null)
@@ -130,8 +157,8 @@ const EMPTY_PATIENT = {
   sangrado_encias: '', sale_pus: '', supuracion_detalle: '',
   movilidad_dientes: '', movilidad_detalle: '',
   observaciones: '',
-  firma_dibujo: '', // base64 PNG from canvas
-  firma: '',        // legible name
+  firma_dibujo: '',
+  firma: '',
 }
 
 const YES_NO_REQUIRED = ['enf_alguna','consume_medicamentos','alergico_medicamentos','sangrado_extraccion','diabetico','cardiaco','hipertension','operado','respiratorio','fuma','alcohol','embarazo','golpe_dientes','dificulta_hablar','dificulta_masticar','dificulta_abrir','sangrado_encias','sale_pus','movilidad_dientes']
@@ -141,19 +168,21 @@ export default function Patients() {
   const [view, setView]     = useState('list')
   const [status, setStatus] = useState('')
 
-  const [listData, setListData]       = useState([])
+  // ✅ CHANGE 1 — initialize list from cache if available
+  const [listData, setListData]       = useState(() => readListCache(1)?.rows || [])
   const [page, setPage]               = useState(1)
-  const [totalPages, setTotalPages]   = useState(1)
+  const [totalPages, setTotalPages]   = useState(() => readListCache(1)?.totalPages || 1)
   const [listLoading, setListLoading] = useState(false)
 
   const [query, setQuery]         = useState('')
   const [results, setResults]     = useState([])
   const [searching, setSearching] = useState(false)
 
+  // ✅ CHANGE 2 — initialize current patient from cache if we have one in state
   const [current, setCurrent]   = useState(null)
   const [loading, setLoading]   = useState(false)
 
-  const [form, setForm]   = useState(EMPTY_PATIENT)
+  const [form, setForm]     = useState(EMPTY_PATIENT)
   const [saving, setSaving] = useState(false)
 
   const [visitForm, setVisitForm]     = useState({ fecha_visita: today(), odontologo: '', motivo: '', notas: '' })
@@ -164,21 +193,39 @@ export default function Patients() {
   useEffect(() => { if (view === 'list') loadList(page) }, [view, page])
 
   const loadList = async (p) => {
-    setListLoading(true); setStatus('')
+    // ✅ CHANGE 3 — show cached list instantly, then fetch fresh in background
+    const cached = readListCache(p)
+    if (cached) {
+      setListData(cached.rows)
+      setTotalPages(cached.totalPages)
+    } else {
+      setListLoading(true)
+    }
+    setStatus('')
+
     try {
-      const res = await listPatientsPaged(p, 20)
+      const res  = await listPatientsPaged(p, 20)
       const rows = Array.isArray(res) ? res : (res.items || res.patients || res.rows || [])
       const total = res.totalPages || (res.total ? Math.ceil(res.total / 20) : 1) || 1
-      setListData(rows); setTotalPages(total)
-    } catch (err) { setStatus('Error: ' + err.message) }
-    finally { setListLoading(false) }
+      setListData(rows)
+      setTotalPages(total)
+      // Save fresh data to cache
+      writeListCache(p, { rows, totalPages: total })
+    } catch (err) {
+      // If we have cached data, keep showing it — just note the refresh failed
+      if (!cached) setStatus('Error: ' + err.message)
+      else setStatus('Mostrando datos guardados — sin conexión.')
+    } finally {
+      setListLoading(false)
+    }
   }
 
   const handleSearch = async () => {
     if (!query.trim()) return
+    // Search results are always fresh — no cache
     setSearching(true); setStatus('')
     try {
-      const res = await findPatients(query.trim())
+      const res  = await findPatients(query.trim())
       const list = Array.isArray(res) ? res : (res.patients || [])
       setResults(list)
       if (!list.length) setStatus('No se encontraron pacientes.')
@@ -187,20 +234,39 @@ export default function Patients() {
   }
 
   const openPatient = async (identidad, from) => {
-    setLoading(true); setStatus('')
+    // ✅ CHANGE 4 — show cached patient instantly, fetch fresh in background
+    const cached = readPatientCache(identidad)
+    if (cached) {
+      setCurrent(cached)
+      setPrevView(from || view)
+      setView('dashboard')
+      setLoading(false)
+    } else {
+      setLoading(true)
+    }
+    setStatus('')
+
     try {
       const res = await getPatientDashboard(identidad)
       if (!res?.ok) { setStatus(res?.error || 'Error.'); return }
-      setCurrent(res); setPrevView(from || view); setView('dashboard')
-    } catch (err) { setStatus('Error: ' + err.message) }
-    finally { setLoading(false) }
+      setCurrent(res)
+      setPrevView(from || view)
+      setView('dashboard')
+      // Save to cache
+      writePatientCache(identidad, res)
+    } catch (err) {
+      if (!cached) setStatus('Error: ' + err.message)
+      else setStatus('Mostrando datos guardados — sin conexión.')
+    } finally {
+      setLoading(false)
+    }
   }
 
   const setField = (k, v) => setForm(f => ({ ...f, [k]: v }))
 
   const submitPatient = async () => {
     const required = ['fecha_registro','odontologo','nombre','identidad','fecha_nacimiento','estado_civil','nacionalidad','celular','domicilio','profesion','motivo']
-    const missing = required.filter(k => !String(form[k] || '').trim())
+    const missing  = required.filter(k => !String(form[k] || '').trim())
     if (missing.length) return setStatus('Faltan campos obligatorios: ' + missing.map(k => k.replace(/_/g,' ')).join(', '))
     const missingYN = YES_NO_REQUIRED.filter(k => !form[k])
     if (missingYN.length) return setStatus('Marcar Sí/No en: ' + missingYN.map(k => k.replace(/_/g,' ')).join(', '))
@@ -214,25 +280,74 @@ export default function Patients() {
       const res = await createPatient(payload)
       if (!res?.ok) { setStatus(res?.error || 'Error al guardar.'); return }
       setStatus('Paciente creado ✓')
+      // Invalidate page 1 cache so the new patient appears on next list load
+      localStorage.removeItem(LIST_CACHE_PREFIX + '1')
       await openPatient(form.identidad, 'list')
       setForm(EMPTY_PATIENT)
     } catch (err) { setStatus('Error: ' + err.message) }
     finally { setSaving(false) }
   }
 
+  // ✅ CHANGE 5 — Optimistic UI for new visit
   const submitVisit = async () => {
     if (!visitForm.odontologo.trim()) return setStatus('Ingrese el odontólogo.')
     if (!visitForm.motivo.trim())     return setStatus('Ingrese el motivo.')
-    setSavingVisit(true); setStatus('Guardando…')
+
+    // Snapshot before clearing
+    const visitSnapshot = { ...visitForm }
+
+    // Build optimistic visit record
+    const optimisticVisit = {
+      ...visitSnapshot,
+      identidad: current.ficha.identidad,
+      nombre:    current.ficha.nombre,
+      _pending:  true,
+    }
+
+    // Add to dashboard immediately — navigate back to dashboard view
+    const updatedCurrent = {
+      ...current,
+      visitas: [optimisticVisit, ...(current.visitas || [])],
+    }
+    setCurrent(updatedCurrent)
+    setView('dashboard')
+    setVisitForm({ fecha_visita: today(), odontologo: '', motivo: '', notas: '' })
+    setStatus('Guardando visita…')
+    setSavingVisit(true)
+
     try {
-      const res = await createVisit({ ...visitForm, identidad: current.ficha.identidad, nombre: current.ficha.nombre })
-      if (!res?.ok) { setStatus(res?.error || 'Error.'); return }
+      const res = await createVisit({
+        ...visitSnapshot,
+        identidad: current.ficha.identidad,
+        nombre:    current.ficha.nombre,
+      })
+      if (!res?.ok) throw new Error(res?.error || 'Error al guardar.')
+
+      // Fetch confirmed data to replace optimistic record with real one
       const refreshed = await getPatientDashboard(current.ficha.identidad)
-      if (refreshed?.ok) setCurrent(refreshed)
-      setStatus('Visita guardada ✓'); setView('dashboard')
-      setVisitForm({ fecha_visita: today(), odontologo: '', motivo: '', notas: '' })
-    } catch (err) { setStatus('Error: ' + err.message) }
-    finally { setSavingVisit(false) }
+      if (refreshed?.ok) {
+        setCurrent(refreshed)
+        writePatientCache(current.ficha.identidad, refreshed)
+      } else {
+        // At least remove the pending flag
+        setCurrent(prev => ({
+          ...prev,
+          visitas: prev.visitas.map(v => v._pending ? { ...v, _pending: false } : v)
+        }))
+      }
+      setStatus('Visita guardada ✓')
+    } catch (err) {
+      // Rollback — remove the optimistic visit and re-open the form
+      setCurrent(prev => ({
+        ...prev,
+        visitas: (prev.visitas || []).filter(v => !v._pending),
+      }))
+      setVisitForm(visitSnapshot)
+      setView('newVisit')
+      setStatus('Error al guardar. Datos restaurados — intenta de nuevo.')
+    } finally {
+      setSavingVisit(false)
+    }
   }
 
   const TabBar = () => (
@@ -260,20 +375,35 @@ export default function Patients() {
               <td style={{ ...td, fontWeight: 600 }}>{p.nombre}</td>
               <td style={td}>{p.celular || '—'}</td>
               <td style={td}>{p.edad || '—'}</td>
-              <td style={td}><Btn size="sm" variant="ghost" onClick={() => openPatient(p.identidad)}>{loading ? '…' : 'Ver'}</Btn></td>
+              <td style={td}>
+                <Btn size="sm" variant="ghost" onClick={() => openPatient(p.identidad)}>
+                  {loading ? '…' : 'Ver'}
+                </Btn>
+              </td>
             </tr>
-          ))}
+          ))
+        }
       </tbody>
     </table>
   )
 
+  // ── Views ─────────────────────────────────────────────────────────────────
+
   if (view === 'list') return (
     <div>
-      <Header title="Pacientes" sub={`Página ${page} de ${totalPages}`}><Btn variant="primary" onClick={() => { setView('newPatient'); setStatus('') }}>+ Nuevo paciente</Btn></Header>
+      <Header title="Pacientes" sub={`Página ${page} de ${totalPages}`}>
+        <Btn variant="primary" onClick={() => { setView('newPatient'); setStatus('') }}>+ Nuevo paciente</Btn>
+      </Header>
       <TabBar />
       {status && <p style={sts}>{status}</p>}
       <Section title="Todos los pacientes">
-        {listLoading ? <p style={{ color: 'var(--ink-muted)' }}>Cargando…</p> : <PatientTable rows={listData} emptyMsg="Sin pacientes registrados." />}
+        {listLoading && !listData.length
+          ? <p style={{ color: 'var(--ink-muted)' }}>Cargando…</p>
+          : <PatientTable rows={listData} emptyMsg="Sin pacientes registrados." />
+        }
+        {listLoading && listData.length > 0 && (
+          <p style={{ fontSize: '0.75rem', color: 'var(--ink-muted)', marginTop: '0.5rem' }}>Actualizando…</p>
+        )}
         {totalPages > 1 && (
           <div style={{ display: 'flex', gap: '0.5rem', marginTop: '1rem', alignItems: 'center' }}>
             <Btn size="sm" variant="ghost" onClick={() => setPage(p => Math.max(1,p-1))} disabled={page===1}>← Anterior</Btn>
@@ -291,8 +421,15 @@ export default function Patients() {
       <TabBar />
       <Section title="Búsqueda">
         <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '1rem' }}>
-          <Input placeholder="Nombre, identidad o teléfono…" value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => e.key==='Enter' && handleSearch()} />
-          <Btn variant="primary" onClick={handleSearch} style={{ whiteSpace: 'nowrap' }}>{searching ? 'Buscando…' : 'Buscar'}</Btn>
+          <Input
+            placeholder="Nombre, identidad o teléfono…"
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && handleSearch()}
+          />
+          <Btn variant="primary" onClick={handleSearch} style={{ whiteSpace: 'nowrap' }}>
+            {searching ? 'Buscando…' : 'Buscar'}
+          </Btn>
         </div>
         {status && <p style={sts}>{status}</p>}
         {results.length > 0 && <PatientTable rows={results} emptyMsg="" />}
@@ -416,10 +553,14 @@ export default function Patients() {
                   {isAdmin && <th style={th}>Doc</th>}
                 </tr></thead>
                 <tbody>
+                  {/* ✅ CHANGE 6 — pending visual on optimistic visit row */}
                   {visitas.map((v,i) => (
-                    <tr key={i} style={trow}>
+                    <tr key={i} style={{ ...trow, opacity: v._pending ? 0.55 : 1, transition: 'opacity 0.3s ease' }}>
                       <td style={td}>{v.fecha_visita}</td>
-                      <td style={td}>{v.odontologo}</td>
+                      <td style={td}>
+                        {v.odontologo}
+                        {v._pending && <span style={pendingBadge}>⏳ guardando</span>}
+                      </td>
                       <td style={td}>{v.motivo}</td>
                       <td style={{...td,color:'var(--ink-muted)',fontSize:'0.85rem'}}>{v.notas||'—'}</td>
                       {isAdmin && <td style={td}>{v.docUrl?<a href={v.docUrl} target="_blank" rel="noreferrer" style={{color:'var(--teal)'}}>Ver</a>:'—'}</td>}
@@ -448,7 +589,9 @@ export default function Patients() {
             <textarea rows={3} value={visitForm.notas} onChange={e => setVisitForm({...visitForm,notas:e.target.value})} style={{width:'100%',padding:'0.55rem 0.8rem',border:'1.5px solid var(--border)',borderRadius:'var(--radius-sm)',background:'#fff',color:'var(--ink)',fontSize:'0.875rem',outline:'none',resize:'vertical'}} />
           </div>
         </div>
-        <div style={{marginTop:'1rem'}}><Btn variant="primary" onClick={submitVisit}>{savingVisit?'Guardando…':'Guardar visita'}</Btn></div>
+        <div style={{marginTop:'1rem'}}>
+          <Btn variant="primary" onClick={submitVisit}>{savingVisit ? 'Guardando…' : 'Guardar visita'}</Btn>
+        </div>
       </Section>
     </div>
   )
@@ -456,6 +599,7 @@ export default function Patients() {
   return null
 }
 
+// ── Shared sub-components ─────────────────────────────────────────────────────
 const Header = ({ title, sub, children }) => (
   <div style={{display:'flex',alignItems:'flex-end',justifyContent:'space-between',marginBottom:'1.25rem',flexWrap:'wrap',gap:'1rem'}}>
     <div>
@@ -466,13 +610,15 @@ const Header = ({ title, sub, children }) => (
   </div>
 )
 
-const tabBar   = {display:'flex',gap:'0',marginBottom:'1.5rem',borderBottom:'2px solid var(--border)'}
-const tabBtn   = {padding:'0.5rem 1.25rem',border:'none',borderBottom:'2px solid transparent',marginBottom:'-2px',background:'transparent',color:'var(--ink-muted)',fontSize:'0.875rem',fontWeight:500,cursor:'pointer',transition:'all 0.15s'}
-const tabActive = {color:'var(--teal)',borderBottomColor:'var(--teal)',fontWeight:600}
-const sts      = {fontSize:'0.875rem',marginBottom:'1rem',color:'var(--ink-muted)'}
-const table    = {width:'100%',borderCollapse:'collapse',fontSize:'0.875rem'}
-const thead    = {borderBottom:'2px solid var(--border)'}
-const th       = {padding:'0.6rem 0.75rem',textAlign:'left',fontWeight:600,fontSize:'0.75rem',textTransform:'uppercase',letterSpacing:'0.04em',color:'var(--ink-muted)'}
-const trow     = {borderBottom:'1px solid var(--border)'}
-const td       = {padding:'0.7rem 0.75rem',verticalAlign:'middle'}
-const g4       = {display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:'1rem'}
+// ── Styles ────────────────────────────────────────────────────────────────────
+const tabBar     = {display:'flex',gap:'0',marginBottom:'1.5rem',borderBottom:'2px solid var(--border)'}
+const tabBtn     = {padding:'0.5rem 1.25rem',border:'none',borderBottom:'2px solid transparent',marginBottom:'-2px',background:'transparent',color:'var(--ink-muted)',fontSize:'0.875rem',fontWeight:500,cursor:'pointer',transition:'all 0.15s'}
+const tabActive  = {color:'var(--teal)',borderBottomColor:'var(--teal)',fontWeight:600}
+const sts        = {fontSize:'0.875rem',marginBottom:'1rem',color:'var(--ink-muted)'}
+const table      = {width:'100%',borderCollapse:'collapse',fontSize:'0.875rem'}
+const thead      = {borderBottom:'2px solid var(--border)'}
+const th         = {padding:'0.6rem 0.75rem',textAlign:'left',fontWeight:600,fontSize:'0.75rem',textTransform:'uppercase',letterSpacing:'0.04em',color:'var(--ink-muted)'}
+const trow       = {borderBottom:'1px solid var(--border)'}
+const td         = {padding:'0.7rem 0.75rem',verticalAlign:'middle'}
+const g4         = {display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:'1rem'}
+const pendingBadge = {marginLeft:'0.5rem',fontSize:'0.7rem',color:'var(--ink-muted)',fontStyle:'italic'}
